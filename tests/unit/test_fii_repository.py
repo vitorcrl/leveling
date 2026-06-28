@@ -85,7 +85,7 @@ class TestGetPreviousSnapshot:
         assert result is None
 
 
-class TestCountStreak:
+class TestCountSnapshotsSince:
     async def test_returns_count_from_database(self):
         session = AsyncMock()
         session.execute = AsyncMock(
@@ -93,7 +93,7 @@ class TestCountStreak:
         )
 
         repo = make_repo(session)
-        count = await repo.count_streak("KNCR11", "high_ltv", since=date(2026, 6, 1))
+        count = await repo.count_snapshots_since("KNCR11", since=date(2026, 6, 1))
         assert count == 3
 
     async def test_returns_zero_when_no_records(self):
@@ -103,7 +103,7 @@ class TestCountStreak:
         )
 
         repo = make_repo(session)
-        count = await repo.count_streak("KNCR11", "high_ltv", since=date(2026, 6, 1))
+        count = await repo.count_snapshots_since("KNCR11", since=date(2026, 6, 1))
         assert count == 0
 
 

@@ -50,4 +50,13 @@ async def run_migrations_online() -> None:
 if context.is_offline_mode():
     run_migrations_offline()
 else:
-    asyncio.run(run_migrations_online())
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        # Chamado de dentro de um contexto async (ex: fixture de teste)
+        loop.run_until_complete(run_migrations_online())
+    else:
+        asyncio.run(run_migrations_online())
