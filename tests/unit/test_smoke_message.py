@@ -156,7 +156,7 @@ class TestSmokePipelineCPTS11:
 
         mock_delivery = MagicMock()
 
-        async def capture_send(msg: str) -> None:
+        async def capture_send(msg: str, chat_id: int | str) -> None:
             sent_messages.append(msg)
 
         mock_delivery.send = capture_send
@@ -187,19 +187,11 @@ class TestSmokePipelineCPTS11:
 
     async def test_telegram_adapter_raises_on_api_error(self):
         """Garante que TelegramDeliveryError é propagado quando a API rejeita."""
-        from unittest.mock import patch
+        from telegram.error import TelegramError
 
-        adapter = TelegramAdapter(settings=make_settings())
+        bot = MagicMock()
+        bot.send_message = AsyncMock(side_effect=TelegramError("chat not found"))
+        adapter = TelegramAdapter(bot)
 
-        with patch("app.adapters.delivery.telegram_adapter.httpx.AsyncClient") as mock_cls:
-            client = AsyncMock()
-            mock_cls.return_value.__aenter__ = AsyncMock(return_value=client)
-            mock_cls.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            response = MagicMock()
-            response.status_code = 400
-            response.text = "Bad Request: chat not found"
-            client.post = AsyncMock(return_value=response)
-
-            with pytest.raises(TelegramDeliveryError, match="400"):
-                await adapter.send("Mensagem de teste para CPTS11")
+        with pytest.raises(TelegramDeliveryError, match="chat not found"):
+            await adapter.send("Mensagem de teste para CPTS11", chat_id=123456789)
