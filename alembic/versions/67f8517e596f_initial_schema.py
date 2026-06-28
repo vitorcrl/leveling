@@ -18,6 +18,8 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
+_UUID_DEFAULT = sa.text("gen_random_uuid()")
+
 
 def upgrade() -> None:
     # -------------------------------------------------------------------------
@@ -25,7 +27,7 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     op.create_table(
         "asset_snapshots",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT),
         sa.Column("ticker", sa.String(20), nullable=False),
         sa.Column("market", sa.String(5), nullable=False),
         sa.Column("date", sa.Date, nullable=False),
@@ -60,17 +62,17 @@ def upgrade() -> None:
 
     op.create_table(
         "fii_portfolio",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT),
         sa.Column("ticker", sa.String(20), unique=True, nullable=False),
-        sa.Column("shares", sa.Integer, nullable=False),
-        sa.Column("avg_price", sa.Numeric(12, 4), nullable=False),
-        sa.Column("total_invested", sa.Numeric(14, 2), nullable=False),
+        sa.Column("shares", sa.Integer, nullable=False, server_default="0"),
+        sa.Column("avg_price", sa.Numeric(12, 4), nullable=False, server_default="0"),
+        sa.Column("total_invested", sa.Numeric(14, 2), nullable=False, server_default="0"),
         sa.Column("updated_at", sa.DateTime, nullable=False),
     )
 
     op.create_table(
         "fii_trades",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT),
         sa.Column("ticker", sa.String(20), nullable=False),
         sa.Column("date", sa.Date, nullable=False),
         sa.Column("shares", sa.Integer, nullable=False),
@@ -82,7 +84,7 @@ def upgrade() -> None:
 
     op.create_table(
         "fii_proventos",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT),
         sa.Column("ticker", sa.String(20), nullable=False),
         sa.Column("date", sa.Date, nullable=False),
         sa.Column("amount_per_share", sa.Numeric(10, 4), nullable=False),
@@ -93,11 +95,11 @@ def upgrade() -> None:
 
     op.create_table(
         "fii_budget",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT),
         sa.Column("week_start", sa.Date, unique=True, nullable=False),
         sa.Column("base_budget", sa.Numeric(14, 2), nullable=False),
-        sa.Column("reinvested_income", sa.Numeric(14, 2), nullable=False),
-        sa.Column("carried_over", sa.Numeric(14, 2), nullable=False),
+        sa.Column("reinvested_income", sa.Numeric(14, 2), nullable=False, server_default="0"),
+        sa.Column("carried_over", sa.Numeric(14, 2), nullable=False, server_default="0"),
         sa.Column("total", sa.Numeric(14, 2), nullable=False),
         sa.Column("created_at", sa.DateTime, nullable=False),
     )
@@ -107,7 +109,7 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     op.create_table(
         "users",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT),
         sa.Column("telegram_chat_id", sa.BigInteger, unique=True, nullable=False),
         sa.Column("stage", sa.SmallInteger, nullable=False, server_default="0"),
         sa.Column("monthly_budget", sa.Numeric(10, 2), nullable=True),
@@ -121,7 +123,7 @@ def upgrade() -> None:
 
     op.create_table(
         "user_goals",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT),
         sa.Column("user_id", UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
         sa.Column("name", sa.String(100), nullable=False),
         sa.Column("goal_value_monthly", sa.Numeric(10, 2), nullable=False),
@@ -132,7 +134,7 @@ def upgrade() -> None:
 
     op.create_table(
         "user_debts",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT),
         sa.Column("user_id", UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
         sa.Column("initial_amount", sa.Numeric(12, 2), nullable=False),
         sa.Column("current_amount", sa.Numeric(12, 2), nullable=False),
@@ -144,7 +146,7 @@ def upgrade() -> None:
 
     op.create_table(
         "user_portfolio",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT),
         sa.Column("user_id", UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
         sa.Column("ticker", sa.String(20), nullable=False),
         sa.Column("shares", sa.Integer, nullable=False, server_default="0"),
@@ -156,7 +158,7 @@ def upgrade() -> None:
 
     op.create_table(
         "user_dividends",
-        sa.Column("id", UUID(as_uuid=True), primary_key=True),
+        sa.Column("id", UUID(as_uuid=True), primary_key=True, server_default=_UUID_DEFAULT),
         sa.Column("user_id", UUID(as_uuid=True), sa.ForeignKey("users.id"), nullable=False),
         sa.Column("ticker", sa.String(20), nullable=False),
         sa.Column("received_date", sa.Date, nullable=False),

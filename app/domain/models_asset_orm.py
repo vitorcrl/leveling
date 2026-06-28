@@ -1,7 +1,7 @@
 # Modelos SQLAlchemy para as tabelas do módulo de FIIs.
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import (
     Column,
@@ -20,7 +20,7 @@ from app.domain.base import Base
 # Atalho para preencher created_at/updated_at sempre em UTC sem fuso.
 # O replace(tzinfo=None) é necessário porque o PostgreSQL espera
 # um datetime "naive" quando a coluna não tem timezone.
-_utc_now = lambda: datetime.now(timezone.utc).replace(tzinfo=None)  # noqa: E731
+_utc_now = lambda: datetime.utcnow()  # noqa: E731
 
 
 class AssetSnapshotORM(Base):

@@ -1,5 +1,5 @@
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
@@ -19,7 +19,7 @@ from sqlalchemy.dialects.postgresql import UUID
 
 from app.domain.base import Base
 
-_utc_now = lambda: datetime.now(timezone.utc).replace(tzinfo=None)  # noqa: E731
+_utc_now = lambda: datetime.utcnow()  # noqa: E731
 
 
 class User(Base):

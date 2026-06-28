@@ -1,6 +1,6 @@
 # Objetos de valor internos ao pipeline — não são tabelas do banco.
 # Usamos dataclasses puras (sem SQLAlchemy) porque esses dados vivem só
-# em memória durante a execução do pipeline. O ORM fica em models_fii.py.
+# em memória durante a execução do pipeline. O ORM fica em models_asset_orm.py.
 #
 # AssetSnapshot é intencionalmente "gordo": carrega campos de FIIs, REITs
 # e ações no mesmo dataclass. Campos irrelevantes para um tipo de ativo
@@ -37,7 +37,7 @@ class Alert:
     value: float | None = None      # valor atual do indicador
     threshold: float | None = None  # limite configurado que foi violado
     # Quantas semanas consecutivas essa regra está disparando para este ticker.
-    # Calculado por fii_repository.count_streak() antes de montar o DigestContext.
+    # Calculado por asset_repository.count_snapshots_since() antes de montar o DigestContext.
     # O narrator usa esse número diretamente: "LTV acima do limite há 3 semanas".
     # Nunca é salvo no banco — é uma agregação calculada, não um dado.
     streak: int = 1

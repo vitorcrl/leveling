@@ -11,7 +11,7 @@ import pytest
 
 from app.adapters.delivery.telegram_adapter import TelegramAdapter, TelegramDeliveryError
 from app.adapters.narrators.template_narrator import TemplateNarrator
-from app.adapters.rules.fii_rule_set import FIIRuleSet
+from app.adapters.rules.asset_rule_set import AssetRuleSet
 from app.adapters.scoring.weighted_score_engine import WeightedScoreEngine
 from app.core.config import Settings
 from app.domain.models_asset import AssetSnapshot, DigestContext
@@ -20,14 +20,14 @@ from app.pipeline.asset_pipeline import AssetPipeline
 
 def make_settings(**kwargs) -> Settings:
     defaults = dict(
-        FII_MIN_DY=8.0,
-        FII_MAX_PVP=1.15,
-        FII_PVP_DISCOUNT=0.80,
-        FII_MAX_VACANCIA=15.0,
-        FII_MAX_LTV=70.0,
-        FII_MIN_LIQUIDEZ=500_000,
-        FII_MAX_PRICE_DROP=5.0,
-        FII_MIN_DELTA_DY=-1.0,
+        ASSET_MIN_DY=8.0,
+        ASSET_MAX_PVP=1.15,
+        ASSET_PVP_DISCOUNT=0.80,
+        ASSET_MAX_VACANCIA=15.0,
+        ASSET_MAX_LTV=70.0,
+        ASSET_MIN_LIQUIDEZ=500_000,
+        ASSET_MAX_PRICE_DROP=5.0,
+        ASSET_MIN_DELTA_DY=-1.0,
         TELEGRAM_BOT_TOKEN="test-token",
         TELEGRAM_CHAT_ID="123456789",
     )
@@ -71,7 +71,7 @@ class TestSmokePipelineCPTS11:
         """Fundo com dados normais do plano free não dispara nenhum alerta."""
         from app.domain.models_asset import AlertSeverity
         settings = make_settings()
-        rules = FIIRuleSet(settings=settings)
+        rules = AssetRuleSet(settings=settings)
         snap = make_cpts11_snapshot()
 
         alerts = rules.evaluate(snap)
@@ -83,7 +83,7 @@ class TestSmokePipelineCPTS11:
     async def test_price_drop_alert_fires(self):
         """Queda de 6% dispara price_drop (critical)."""
         settings = make_settings()
-        rules = FIIRuleSet(settings=settings)
+        rules = AssetRuleSet(settings=settings)
         snap = make_cpts11_snapshot_price_drop()
 
         alerts = rules.evaluate(snap)
@@ -95,7 +95,7 @@ class TestSmokePipelineCPTS11:
     async def test_low_liquidez_alert_fires(self):
         """Volume baixo dispara low_liquidez (warning)."""
         settings = make_settings()
-        rules = FIIRuleSet(settings=settings)
+        rules = AssetRuleSet(settings=settings)
         snap = AssetSnapshot(
             ticker="CPTS11",
             market="BR",
@@ -103,7 +103,7 @@ class TestSmokePipelineCPTS11:
             price=7.43,
             dy_12m=0.0,
             pvp=0.0,
-            liquidez=100_000,  # abaixo de FII_MIN_LIQUIDEZ=500k
+            liquidez=100_000,  # abaixo de ASSET_MIN_LIQUIDEZ=500k
         )
 
         alerts = rules.evaluate(snap)
@@ -112,7 +112,7 @@ class TestSmokePipelineCPTS11:
 
     async def test_template_narrator_mentions_cpts11(self):
         settings = make_settings()
-        rules = FIIRuleSet(settings=settings)
+        rules = AssetRuleSet(settings=settings)
         snap = make_cpts11_snapshot_price_drop()
         alerts = rules.evaluate(snap)
 
@@ -163,7 +163,7 @@ class TestSmokePipelineCPTS11:
 
         pipeline = AssetPipeline(
             data=mock_data,
-            rules=FIIRuleSet(settings=settings),
+            rules=AssetRuleSet(settings=settings),
             scorer=WeightedScoreEngine(),
             narrator=TemplateNarrator(),
             delivery=mock_delivery,

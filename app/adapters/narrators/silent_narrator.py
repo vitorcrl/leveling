@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class SilentNarrator:
     """
     Retorna uma mensagem padrão sem chamar nenhuma API.
-    Usado pelo fii_runner quando DigestContext.total_alerts == 0.
+    Usado pelo journey_runner quando DigestContext.total_alerts == 0.
 
     Custo: zero tokens, zero latência extra.
     """

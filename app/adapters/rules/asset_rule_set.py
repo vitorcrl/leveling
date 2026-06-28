@@ -1,8 +1,8 @@
-# Implementação de RulePort para FIIs brasileiros.
+# Implementação de RulePort para ativos (FIIs brasileiros e REITs).
 # Cada regra é um método privado que recebe um AssetSnapshot e retorna
 # uma lista de Alert — vazia se nada disparou, com um item se disparou.
 #
-# O FIIRuleSet.evaluate() chama todas as regras em sequência e agrega
+# O AssetRuleSet.evaluate() chama todas as regras em sequência e agrega
 # os alertas. Isso permite que um mesmo fundo dispare múltiplos alertas
 # no mesmo dia (ex: DY baixo E vacância alta ao mesmo tempo).
 #
@@ -17,13 +17,13 @@ from app.domain.models_asset import Alert, AlertSeverity, AssetSnapshot
 logger = logging.getLogger(__name__)
 
 
-class FIIRuleSet:
+class AssetRuleSet:
     """
-    Conjunto de 9 regras de análise para FIIs brasileiros.
-    Implementa RulePort — injetado no AssetPipeline pelo fii_runner.py.
+    Conjunto de 9 regras de análise para ativos da watchlist.
+    Implementa RulePort — injetado no AssetPipeline pelo journey_runner.py.
 
     Uso:
-        rules = FIIRuleSet(settings)
+        rules = AssetRuleSet(settings)
         alerts = rules.evaluate(snapshot)
     """
 
@@ -69,14 +69,14 @@ class FIIRuleSet:
     def _rule_low_dy(self, s: AssetSnapshot) -> list[Alert]:
         if s.dy_12m == 0.0:
             return []
-        if s.dy_12m < self._s.FII_MIN_DY:
+        if s.dy_12m < self._s.ASSET_MIN_DY:
             return [Alert(
                 ticker=s.ticker,
                 rule="low_dy",
-                message=f"DY 12M de {s.dy_12m:.1f}% abaixo do mínimo de {self._s.FII_MIN_DY:.1f}%",
+                message=f"DY 12M de {s.dy_12m:.1f}% abaixo do mínimo de {self._s.ASSET_MIN_DY:.1f}%",
                 severity=AlertSeverity.warning,
                 value=s.dy_12m,
-                threshold=self._s.FII_MIN_DY,
+                threshold=self._s.ASSET_MIN_DY,
             )]
         return []
 
@@ -86,7 +86,7 @@ class FIIRuleSet:
     # redução de proventos — sinal de deterioração antes de aparecer no preço.
     # -------------------------------------------------------------------------
     def _rule_falling_dy(self, s: AssetSnapshot) -> list[Alert]:
-        if s.delta_dy < self._s.FII_MIN_DELTA_DY:
+        if s.delta_dy < self._s.ASSET_MIN_DELTA_DY:
             return [Alert(
                 ticker=s.ticker,
                 rule="falling_dy",
@@ -96,7 +96,7 @@ class FIIRuleSet:
                 ),
                 severity=AlertSeverity.warning,
                 value=s.delta_dy,
-                threshold=self._s.FII_MIN_DELTA_DY,
+                threshold=self._s.ASSET_MIN_DELTA_DY,
             )]
         return []
 
@@ -109,14 +109,14 @@ class FIIRuleSet:
         # pvp=0.0 significa que a API não retornou o dado — ignorar
         if s.pvp == 0.0:
             return []
-        if s.pvp > self._s.FII_MAX_PVP:
+        if s.pvp > self._s.ASSET_MAX_PVP:
             return [Alert(
                 ticker=s.ticker,
                 rule="overvalued_pvp",
-                message=f"P/VP de {s.pvp:.2f} acima do limite de {self._s.FII_MAX_PVP:.2f}",
+                message=f"P/VP de {s.pvp:.2f} acima do limite de {self._s.ASSET_MAX_PVP:.2f}",
                 severity=AlertSeverity.warning,
                 value=s.pvp,
-                threshold=self._s.FII_MAX_PVP,
+                threshold=self._s.ASSET_MAX_PVP,
             )]
         return []
 
@@ -128,14 +128,14 @@ class FIIRuleSet:
     def _rule_discount_pvp(self, s: AssetSnapshot) -> list[Alert]:
         if s.pvp == 0.0:
             return []
-        if s.pvp < self._s.FII_PVP_DISCOUNT:
+        if s.pvp < self._s.ASSET_PVP_DISCOUNT:
             return [Alert(
                 ticker=s.ticker,
                 rule="discount_pvp",
-                message=f"P/VP em desconto: {s.pvp:.2f} (abaixo de {self._s.FII_PVP_DISCOUNT:.2f})",
+                message=f"P/VP em desconto: {s.pvp:.2f} (abaixo de {self._s.ASSET_PVP_DISCOUNT:.2f})",
                 severity=AlertSeverity.info,
                 value=s.pvp,
-                threshold=self._s.FII_PVP_DISCOUNT,
+                threshold=self._s.ASSET_PVP_DISCOUNT,
             )]
         return []
 
@@ -148,18 +148,18 @@ class FIIRuleSet:
         if s.vacancia is None:
             # Fundo de papel (CRI/LCI) não tem vacância — regra não se aplica
             return []
-        if s.vacancia > self._s.FII_MAX_VACANCIA:
+        if s.vacancia > self._s.ASSET_MAX_VACANCIA:
             return [Alert(
                 ticker=s.ticker,
                 rule="high_vacancia",
                 message=(
                     f"Vacância de {s.vacancia:.1f}% acima do limite de "
-                    f"{self._s.FII_MAX_VACANCIA:.1f}%"
+                    f"{self._s.ASSET_MAX_VACANCIA:.1f}%"
                     + (f" (+{s.delta_vacancia:.1f}pp vs semana)" if s.delta_vacancia > 0 else "")
                 ),
                 severity=AlertSeverity.warning,
                 value=s.vacancia,
-                threshold=self._s.FII_MAX_VACANCIA,
+                threshold=self._s.ASSET_MAX_VACANCIA,
             )]
         return []
 
@@ -174,17 +174,17 @@ class FIIRuleSet:
             # Fundo de tijolo não tem LTV — regra não se aplica
             return []
         severity = (
-            AlertSeverity.critical if s.ltv > self._s.FII_MAX_LTV + 10
+            AlertSeverity.critical if s.ltv > self._s.ASSET_MAX_LTV + 10
             else AlertSeverity.warning
         )
-        if s.ltv > self._s.FII_MAX_LTV:
+        if s.ltv > self._s.ASSET_MAX_LTV:
             return [Alert(
                 ticker=s.ticker,
                 rule="high_ltv",
-                message=f"LTV em {s.ltv:.1f}% acima do limite de {self._s.FII_MAX_LTV:.1f}%",
+                message=f"LTV em {s.ltv:.1f}% acima do limite de {self._s.ASSET_MAX_LTV:.1f}%",
                 severity=severity,
                 value=s.ltv,
-                threshold=self._s.FII_MAX_LTV,
+                threshold=self._s.ASSET_MAX_LTV,
             )]
         return []
 
@@ -194,17 +194,17 @@ class FIIRuleSet:
     # de posição sem impactar o preço (spread alto, risco de não conseguir vender).
     # -------------------------------------------------------------------------
     def _rule_low_liquidez(self, s: AssetSnapshot) -> list[Alert]:
-        if s.liquidez < self._s.FII_MIN_LIQUIDEZ:
+        if s.liquidez < self._s.ASSET_MIN_LIQUIDEZ:
             return [Alert(
                 ticker=s.ticker,
                 rule="low_liquidez",
                 message=(
                     f"Liquidez de R${s.liquidez:,.0f}/dia abaixo do mínimo "
-                    f"de R${self._s.FII_MIN_LIQUIDEZ:,.0f}"
+                    f"de R${self._s.ASSET_MIN_LIQUIDEZ:,.0f}"
                 ),
                 severity=AlertSeverity.warning,
                 value=s.liquidez,
-                threshold=self._s.FII_MIN_LIQUIDEZ,
+                threshold=self._s.ASSET_MIN_LIQUIDEZ,
             )]
         return []
 
@@ -231,16 +231,16 @@ class FIIRuleSet:
     # -------------------------------------------------------------------------
     def _rule_price_drop(self, s: AssetSnapshot) -> list[Alert]:
         # delta_price é negativo para queda (ex: -6.2 = caiu 6.2%)
-        if s.delta_price < -self._s.FII_MAX_PRICE_DROP:
+        if s.delta_price < -self._s.ASSET_MAX_PRICE_DROP:
             return [Alert(
                 ticker=s.ticker,
                 rule="price_drop",
                 message=(
                     f"Queda de {abs(s.delta_price):.1f}% hoje "
-                    f"(limite: {self._s.FII_MAX_PRICE_DROP:.1f}%)"
+                    f"(limite: {self._s.ASSET_MAX_PRICE_DROP:.1f}%)"
                 ),
                 severity=AlertSeverity.critical,
                 value=s.delta_price,
-                threshold=-self._s.FII_MAX_PRICE_DROP,
+                threshold=-self._s.ASSET_MAX_PRICE_DROP,
             )]
         return []

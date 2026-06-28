@@ -4,10 +4,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models_asset import AssetSnapshot
-from app.domain.models_fii import AssetSnapshotORM
+from app.domain.models_asset_orm import AssetSnapshotORM
 
 
-class FIIRepository:
+class AssetRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 
@@ -54,15 +54,18 @@ class FIIRepository:
         )
         return result.scalar_one_or_none()
 
-    async def count_streak(self, ticker: str, rule: str, since: date) -> int:
+    async def count_snapshots_since(self, ticker: str, since: date) -> int:
         """
-        Conta quantos dias consecutivos a regra disparou para o ticker.
-        Usado pelo narrator: "LTV acima do limite há N semanas".
-        A contagem é aproximada — baseada nos snapshots registrados, não em
-        um campo separado. Suficiente para o texto do narrator.
+        Conta quantos snapshots existem para o ticker desde a data informada.
+        Usado como proxy de streak pelo narrator: quanto mais snapshots, mais
+        semanas consecutivas o pipeline rodou para esse fundo.
+        Nota: não filtra por regra — AssetSnapshotORM não armazena qual regra
+        disparou. O narrator usa esse número como aproximação de "há N semanas".
         """
         result = await self.session.execute(
-            select(func.count()).where(
+            select(func.count())
+            .select_from(AssetSnapshotORM)
+            .where(
                 AssetSnapshotORM.ticker == ticker,
                 AssetSnapshotORM.date >= since,
             )

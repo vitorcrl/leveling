@@ -20,16 +20,12 @@ def _factory() -> async_sessionmaker:
 
 class _LazySessionFactory:
     """
-    Proxy que adia a criação do engine para a primeira chamada.
-    Mantém a interface `async with AsyncSessionFactory() as session:`
-    sem criar conexão em import time.
+    Adia a criação do engine para a primeira chamada.
+    Interface: `async with AsyncSessionFactory() as session:`
     """
 
-    def __call__(self):
+    def __call__(self) -> AsyncSession:
         return _factory()()
-
-    def __getattr__(self, name):
-        return getattr(_factory(), name)
 
 
 AsyncSessionFactory = _LazySessionFactory()

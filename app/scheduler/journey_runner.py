@@ -1,7 +1,7 @@
 """
-Runner autônomo para o pipeline de FIIs.
+Runner autônomo para o pipeline de jornada financeira.
 Roda como processo separado — sem FastAPI, sem APScheduler pesado.
-Invocado via: python -m app.scheduler.fii_runner
+Invocado via: python -m app.scheduler.journey_runner
 """
 
 import asyncio
@@ -13,19 +13,19 @@ from telegram import Bot
 from app.adapters.data.brapi_adapter import BrapiDataAdapter
 from app.adapters.delivery.telegram_adapter import TelegramAdapter
 from app.adapters.narrators.claude_haiku_narrator import ClaudeHaikuNarrator
-from app.adapters.rules.fii_rule_set import FIIRuleSet
+from app.adapters.rules.asset_rule_set import AssetRuleSet
 from app.adapters.scoring.weighted_score_engine import WeightedScoreEngine
 from app.core.config import get_settings
 from app.domain.models_asset import AssetSnapshot
 from app.pipeline.asset_pipeline import AssetPipeline
-from app.repositories.fii_repository import FIIRepository
+from app.repositories.asset_repository import AssetRepository
 
 logger = logging.getLogger(__name__)
 
 
 async def _enrich_and_save(
     snapshot: AssetSnapshot,
-    repo: FIIRepository,
+    repo: AssetRepository,
 ) -> AssetSnapshot:
     """
     Preenche os deltas comparando com o snapshot da semana anterior,
@@ -52,11 +52,11 @@ async def run_daily(chat_id: int | str, run_date: date | None = None) -> None:
     from app.core.database import AsyncSessionFactory
 
     settings = get_settings()
-    tickers = settings.fii_watchlist_tickers
+    tickers = settings.watchlist_tickers
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
 
     async with AsyncSessionFactory() as session:
-        repo = FIIRepository(session)
+        repo = AssetRepository(session)
 
         # ClaudeHaikuNarrator já implementa o zero-token path internamente:
         # se não há alertas, retorna mensagem padrão sem chamar a API.
@@ -67,7 +67,7 @@ async def run_daily(chat_id: int | str, run_date: date | None = None) -> None:
                 base_url=settings.BRAPI_BASE_URL,
                 token=settings.BRAPI_TOKEN,
             ),
-            rules=FIIRuleSet(settings=settings),
+            rules=AssetRuleSet(settings=settings),
             scorer=WeightedScoreEngine(),
             narrator=narrator,
             delivery=TelegramAdapter(bot),
