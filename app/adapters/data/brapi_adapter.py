@@ -5,7 +5,7 @@
 # Documentação: https://brapi.dev/docs
 # Endpoint principal: GET /api/quote/{ticker}?token=...&fundamental=true
 #
-# Este adapter é injetado no AssetPipeline pelo fii_runner.py.
+# Este adapter é injetado no AssetPipeline pelo journey_runner.py.
 # Para trocar a fonte de dados (ex: Status Invest, funds.net), basta criar
 # outro adapter que implemente o mesmo método fetch() — o pipeline não muda.
 

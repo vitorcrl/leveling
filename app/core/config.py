@@ -21,25 +21,25 @@ class Settings(BaseSettings):
     BRAPI_TOKEN: str = ""
     BRAPI_BASE_URL: str = "https://brapi.dev/api"
 
-    # --- Watchlist e orçamento FIIs ---
-    FII_WATCHLIST: str = "KNCR11,MXRF11,HSML11,BRCO11,LVBI11"
-    FII_WEEKLY_BUDGET: float = 500.00
-    FII_REINVEST_PROVENTOS: bool = True
-    FII_CRON_HOUR: int = 10
+    # --- Watchlist e orçamento ---
+    ASSET_WATCHLIST: str = "KNCR11,MXRF11,HSML11,BRCO11,LVBI11"
+    WEEKLY_BUDGET: float = 500.00
+    REINVEST_INCOME: bool = True
+    JOURNEY_CRON_HOUR: int = 10
 
-    # --- Thresholds das regras de FIIs ---
-    FII_MIN_DY: float = 8.0
-    FII_MAX_PVP: float = 1.15
-    FII_PVP_DISCOUNT: float = 0.80
-    FII_MAX_VACANCIA: float = 15.0
-    FII_MAX_LTV: float = 70.0
-    FII_MIN_LIQUIDEZ: float = 500_000
-    FII_MAX_PRICE_DROP: float = 5.0
-    FII_MIN_DELTA_DY: float = -1.0
+    # --- Thresholds das regras de ativos ---
+    ASSET_MIN_DY: float = 8.0
+    ASSET_MAX_PVP: float = 1.15
+    ASSET_PVP_DISCOUNT: float = 0.80
+    ASSET_MAX_VACANCIA: float = 15.0
+    ASSET_MAX_LTV: float = 70.0
+    ASSET_MIN_LIQUIDEZ: float = 500_000
+    ASSET_MAX_PRICE_DROP: float = 5.0
+    ASSET_MIN_DELTA_DY: float = -1.0
 
     @property
-    def fii_watchlist_tickers(self) -> list[str]:
-        return [t.strip().upper() for t in self.FII_WATCHLIST.split(",") if t.strip()]
+    def watchlist_tickers(self) -> list[str]:
+        return [t.strip().upper() for t in self.ASSET_WATCHLIST.split(",") if t.strip()]
 
 
 @lru_cache

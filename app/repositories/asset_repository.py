@@ -4,10 +4,10 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models_asset import AssetSnapshot
-from app.domain.models_fii import AssetSnapshotORM
+from app.domain.models_asset_orm import AssetSnapshotORM
 
 
-class FIIRepository:
+class AssetRepository:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
 

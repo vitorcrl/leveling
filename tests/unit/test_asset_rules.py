@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from app.adapters.rules.fii_rule_set import FIIRuleSet
+from app.adapters.rules.asset_rule_set import AssetRuleSet
 from app.core.config import Settings
 from app.domain.models_asset import AlertSeverity, AssetSnapshot
 
@@ -12,20 +12,20 @@ from app.domain.models_asset import AlertSeverity, AssetSnapshot
 def settings() -> Settings:
     return Settings(
         DATABASE_URL="postgresql+asyncpg://x:x@localhost/x",
-        FII_MIN_DY=8.0,
-        FII_MAX_PVP=1.15,
-        FII_PVP_DISCOUNT=0.80,
-        FII_MAX_VACANCIA=15.0,
-        FII_MAX_LTV=70.0,
-        FII_MIN_LIQUIDEZ=500_000,
-        FII_MAX_PRICE_DROP=5.0,
-        FII_MIN_DELTA_DY=-1.0,
+        ASSET_MIN_DY=8.0,
+        ASSET_MAX_PVP=1.15,
+        ASSET_PVP_DISCOUNT=0.80,
+        ASSET_MAX_VACANCIA=15.0,
+        ASSET_MAX_LTV=70.0,
+        ASSET_MIN_LIQUIDEZ=500_000,
+        ASSET_MAX_PRICE_DROP=5.0,
+        ASSET_MIN_DELTA_DY=-1.0,
     )
 
 
 @pytest.fixture
-def rules(settings: Settings) -> FIIRuleSet:
-    return FIIRuleSet(settings=settings)
+def rules(settings: Settings) -> AssetRuleSet:
+    return AssetRuleSet(settings=settings)
 
 
 def make_snapshot(**kwargs) -> AssetSnapshot:
@@ -147,7 +147,7 @@ class TestRuleHighLTV:
         assert any(a.rule == "high_ltv" for a in alerts)
 
     def test_escalates_to_critical_when_ltv_very_high(self, rules):
-        # FII_MAX_LTV=70, então >80 (70+10) escala para critical
+        # ASSET_MAX_LTV=70, então >80 (70+10) escala para critical
         snap = make_snapshot(ltv=85.0)
         alerts = [a for a in rules.evaluate(snap) if a.rule == "high_ltv"]
         assert alerts[0].severity == AlertSeverity.critical

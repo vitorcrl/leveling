@@ -1,5 +1,5 @@
 # Placeholder para integração futura com APIs externas de análise de FIIs.
-# Implementa RulePort — pode ser injetado no lugar do FIIRuleSet ou em
+# Implementa RulePort — pode ser injetado no lugar do AssetRuleSet ou em
 # conjunto com ele (o pipeline aceita qualquer implementação da porta).
 #
 # Candidatos naturais para preencher este adapter:
@@ -22,11 +22,11 @@ class ExternalAPIRuleAdapter:
     Adapter de regras via API externa — atualmente retorna lista vazia.
 
     Quando implementado, este adapter pode:
-      - Complementar o FIIRuleSet com dados que a brapi.dev não fornece
+      - Complementar o AssetRuleSet com dados que a brapi.dev não fornece
       - Substituir regras locais por ratings calculados externamente
       - Adicionar análise editorial (ex: "fundo em watchlist negativa")
 
-    Para usar junto com FIIRuleSet no pipeline, crie um CompositeRuleSet
+    Para usar junto com AssetRuleSet no pipeline, crie um CompositeRuleSet
     que chame os dois evaluate() e una os resultados — sem mudar o pipeline.
     """
 

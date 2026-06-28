@@ -8,7 +8,7 @@ from app.core.config import get_settings
 from app.domain.base import Base
 
 # Importa todos os modelos para que Base.metadata os enxergue na autogenerate
-import app.domain.models_fii   # noqa: F401
+import app.domain.models_asset_orm   # noqa: F401
 import app.domain.models_user  # noqa: F401
 
 config = context.config

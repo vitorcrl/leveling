@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.domain.models_asset import AssetSnapshot
-from app.repositories.fii_repository import FIIRepository
+from app.repositories.asset_repository import AssetRepository
 
 
 def make_snapshot(ticker: str = "KNCR11", snap_date: date = date(2026, 6, 26)) -> AssetSnapshot:
@@ -15,7 +15,7 @@ def make_snapshot(ticker: str = "KNCR11", snap_date: date = date(2026, 6, 26)) -
 
 
 def make_repo(session=None):
-    return FIIRepository(session or AsyncMock())
+    return AssetRepository(session or AsyncMock())
 
 
 class TestSaveSnapshot:
