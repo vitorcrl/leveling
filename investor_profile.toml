@@ -1,0 +1,23 @@
+# Perfil do investidor — editável sem tocar no código.
+# O ClaudeHaikuNarrator carrega este arquivo e injeta no system prompt
+# para que a Claude fale como analista que conhece o investidor pelo nome.
+
+[investor]
+nome = "Vitor"
+perfil = "moderado"           # conservador / moderado / arrojado
+horizonte = "longo prazo"     # curto / médio / longo prazo
+objetivo = "renda passiva via dividendos, acumulação gradual"
+aversao_volatilidade = "média"
+
+[fii]
+foco = ["papel", "logística"]
+evitar = ["desenvolvimento", "hotelaria"]
+meta_dy_minimo = 9.0          # DY abaixo disso é alerta independente de regra
+
+[reit]
+foco = ["dividendos altos", "logística"]
+moeda_referencia = "BRL"      # normaliza tudo pra BRL antes de analisar
+
+[acoes]
+estilo = "valor"              # valor / crescimento / dividendos
+mercados = ["BR", "US"]
