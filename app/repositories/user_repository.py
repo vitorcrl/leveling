@@ -75,3 +75,28 @@ class UserRepository:
 
         await self._session.commit()
         return user
+
+    async def get_all_active(self) -> list[User]:
+        """Retorna todos os usuários com onboarding completo."""
+        result = await self._session.execute(
+            select(User).where(User.onboarding_complete.is_(True))
+        )
+        return list(result.scalars().all())
+
+    async def get_active_debt(self, user_id) -> UserDebt | None:
+        result = await self._session.execute(
+            select(UserDebt)
+            .where(UserDebt.user_id == user_id, UserDebt.current_amount > 0)
+            .order_by(UserDebt.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def get_active_goal(self, user_id) -> UserGoal | None:
+        result = await self._session.execute(
+            select(UserGoal)
+            .where(UserGoal.user_id == user_id, UserGoal.achieved_at.is_(None))
+            .order_by(UserGoal.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
