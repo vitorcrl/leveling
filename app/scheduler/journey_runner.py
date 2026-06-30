@@ -1,7 +1,11 @@
 """
-Runner autônomo para o pipeline de jornada financeira.
-Roda como processo separado — sem FastAPI, sem APScheduler pesado.
+Runner do pipeline de FIIs para usuários no Estágio 2.
+
+Busca todos os usuários com stage=2 e onboarding completo e envia
+o digest semanal de FIIs para cada um usando a watchlist global.
+
 Invocado via: python -m app.scheduler.journey_runner
+Ou pelo entry point unificado em app/bot/main.py (todo sábado às 10h).
 """
 
 import asyncio
@@ -19,6 +23,7 @@ from app.core.config import get_settings
 from app.domain.models_asset import AssetSnapshot
 from app.pipeline.asset_pipeline import AssetPipeline
 from app.repositories.asset_repository import AssetRepository
+from app.repositories.user_repository import UserRepository
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +32,6 @@ async def _enrich_and_save(
     snapshot: AssetSnapshot,
     repo: AssetRepository,
 ) -> AssetSnapshot:
-    """
-    Preenche os deltas comparando com o snapshot da semana anterior,
-    depois persiste o snapshot atual no banco.
-    """
     previous = await repo.get_previous_snapshot(snapshot.ticker, before=snapshot.date)
     if previous is not None:
         snapshot.delta_dy = snapshot.dy_12m - float(previous.dy_12m or 0)
@@ -48,38 +49,64 @@ async def _enrich_and_save(
     return snapshot
 
 
-async def run_daily(chat_id: int | str, run_date: date | None = None) -> None:
+async def _run_for_user(
+    chat_id: int | str,
+    pipeline: AssetPipeline,
+    asset_repo: AssetRepository,
+    run_date: date | None,
+) -> None:
+    async def enrich(snapshot: AssetSnapshot) -> AssetSnapshot:
+        return await _enrich_and_save(snapshot, asset_repo)
+
+    await pipeline.run(
+        tickers=get_settings().watchlist_tickers,
+        chat_id=chat_id,
+        run_date=run_date,
+        enrich_snapshot=enrich,
+    )
+
+
+async def run_for_all_stage2_users(run_date: date | None = None) -> dict[str, int]:
     from app.core.database import AsyncSessionFactory
 
     settings = get_settings()
-    tickers = settings.watchlist_tickers
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
+    delivery = TelegramAdapter(bot)
+    narrator = ClaudeHaikuNarrator(api_key=settings.ANTHROPIC_API_KEY)
+    pipeline = AssetPipeline(
+        data=BrapiDataAdapter(base_url=settings.BRAPI_BASE_URL, token=settings.BRAPI_TOKEN),
+        rules=AssetRuleSet(settings=settings),
+        scorer=WeightedScoreEngine(),
+        narrator=narrator,
+        delivery=delivery,
+    )
+
+    sent = errors = 0
 
     async with AsyncSessionFactory() as session:
-        repo = AssetRepository(session)
+        users = await UserRepository(session).get_all_active()
+        stage2_users = [u for u in users if u.stage == 2]
 
-        # ClaudeHaikuNarrator já implementa o zero-token path internamente:
-        # se não há alertas, retorna mensagem padrão sem chamar a API.
-        narrator = ClaudeHaikuNarrator(api_key=settings.ANTHROPIC_API_KEY)
+        logger.info("journey_runner: %d stage-2 users found", len(stage2_users))
 
-        pipeline = AssetPipeline(
-            data=BrapiDataAdapter(
-                base_url=settings.BRAPI_BASE_URL,
-                token=settings.BRAPI_TOKEN,
-            ),
-            rules=AssetRuleSet(settings=settings),
-            scorer=WeightedScoreEngine(),
-            narrator=narrator,
-            delivery=TelegramAdapter(bot),
-        )
+        for user in stage2_users:
+            async with AsyncSessionFactory() as asset_session:
+                asset_repo = AssetRepository(asset_session)
+                try:
+                    await _run_for_user(user.telegram_chat_id, pipeline, asset_repo, run_date)
+                    sent += 1
+                    logger.info(
+                        "journey_runner: sent FII digest to chat_id=%s", user.telegram_chat_id
+                    )
+                except Exception:
+                    errors += 1
+                    logger.exception(
+                        "journey_runner: failed for chat_id=%s", user.telegram_chat_id
+                    )
 
-        async def enrich(snapshot: AssetSnapshot) -> AssetSnapshot:
-            return await _enrich_and_save(snapshot, repo)
-
-        await pipeline.run(tickers=tickers, chat_id=chat_id, run_date=run_date, enrich_snapshot=enrich)
+    return {"sent": sent, "errors": errors}
 
 
 if __name__ == "__main__":
-    import os
-    logging.basicConfig(level=logging.INFO)
-    asyncio.run(run_daily(chat_id=os.environ["TELEGRAM_CHAT_ID"]))
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    asyncio.run(run_for_all_stage2_users())
