@@ -21,6 +21,7 @@ from telegram import Bot
 from app.adapters.delivery.telegram_adapter import TelegramAdapter
 from app.core.config import get_settings
 from app.domain.models_user import User, UserDebt, UserGoal
+from app.domain.ports import DeliveryPort
 from app.repositories.user_repository import UserRepository
 
 logger = logging.getLogger(__name__)
@@ -79,7 +80,7 @@ def _build_stage2_message(user: User, goal: UserGoal | None) -> str:
     return "\n".join(lines)
 
 
-async def send_weekly_digest(delivery: TelegramAdapter) -> dict[str, int]:
+async def send_weekly_digest(delivery: DeliveryPort) -> dict[str, int]:
     from app.core.database import AsyncSessionFactory
 
     sent = skipped = errors = 0
