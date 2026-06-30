@@ -29,7 +29,6 @@ def make_settings(**kwargs) -> Settings:
         ASSET_MAX_PRICE_DROP=5.0,
         ASSET_MIN_DELTA_DY=-1.0,
         TELEGRAM_BOT_TOKEN="test-token",
-        TELEGRAM_CHAT_ID="123456789",
     )
     defaults.update(kwargs)
     return Settings(**defaults)
