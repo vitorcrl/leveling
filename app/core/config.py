@@ -15,7 +15,6 @@ class Settings(BaseSettings):
 
     # --- Telegram ---
     TELEGRAM_BOT_TOKEN: str = ""
-    TELEGRAM_CHAT_ID: str = ""
 
     # --- brapi.dev ---
     BRAPI_TOKEN: str = ""
