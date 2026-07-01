@@ -92,6 +92,32 @@ class UserRepository:
         )
         return result.scalar_one_or_none()
 
+    async def update_debt_amount(self, user_id, new_amount: Decimal) -> UserDebt | None:
+        """Atualiza current_amount da dívida ativa. Retorna None se não há dívida ativa."""
+        debt = await self.get_active_debt(user_id)
+        if debt is None:
+            return None
+        debt.current_amount = new_amount
+        await self._session.commit()
+        return debt
+
+    async def promote_stage(self, user_id, new_stage: int) -> User:
+        """Promove o usuário para o novo stage e limpa stage_check_sent_at."""
+        result = await self._session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one()
+        user.stage = new_stage
+        user.stage_check_sent_at = None
+        await self._session.commit()
+        return user
+
+    async def mark_stage_check_sent(self, user_id) -> None:
+        """Registra que a pergunta de promoção foi enviada agora."""
+        from datetime import datetime, timezone
+        result = await self._session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one()
+        user.stage_check_sent_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await self._session.commit()
+
     async def get_active_goal(self, user_id) -> UserGoal | None:
         result = await self._session.execute(
             select(UserGoal)
