@@ -8,22 +8,26 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from datetime import datetime, timedelta, timezone
+
 from app.scheduler.weekly_runner import (
     _build_stage0_message,
     _build_stage1_message,
     _build_stage2_message,
     _fmt,
+    _should_send_stage_check,
     send_weekly_digest,
 )
 
 
-def make_user(stage: int = 0, budget: str = "500") -> MagicMock:
+def make_user(stage: int = 0, budget: str = "500", stage_check_sent_at=None) -> MagicMock:
     user = MagicMock()
     user.id = "user-uuid-1"
     user.telegram_chat_id = 123456
     user.stage = stage
     user.monthly_budget = Decimal(budget)
     user.risk_profile = "conservador"
+    user.stage_check_sent_at = stage_check_sent_at
     return user
 
 
@@ -249,3 +253,94 @@ class TestPaidNeverNegative:
         debt = make_debt(initial="5000", current="3000")
         msg = _build_stage0_message(user, debt, None)
         assert "2.000" in msg  # paid = 2000
+
+
+# ---------------------------------------------------------------------------
+# _should_send_stage_check
+# ---------------------------------------------------------------------------
+
+class TestShouldSendStageCheck:
+    def test_none_means_never_sent(self):
+        user = make_user(stage=1, stage_check_sent_at=None)
+        assert _should_send_stage_check(user) is True
+
+    def test_sent_recently_means_no(self):
+        recent = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=2)
+        user = make_user(stage=1, stage_check_sent_at=recent)
+        assert _should_send_stage_check(user) is False
+
+    def test_sent_over_a_week_ago_means_yes(self):
+        old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=8)
+        user = make_user(stage=1, stage_check_sent_at=old)
+        assert _should_send_stage_check(user) is True
+
+    def test_sent_exactly_6_days_ago_means_yes(self):
+        six_days_ago = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=6)
+        user = make_user(stage=1, stage_check_sent_at=six_days_ago)
+        assert _should_send_stage_check(user) is True
+
+
+# ---------------------------------------------------------------------------
+# send_weekly_digest com bot (pergunta stage 1→2)
+# ---------------------------------------------------------------------------
+
+class TestStage1CheckInDigest:
+    def _patch_session(self, users, debt=None, goal=None):
+        mock_factory = MagicMock()
+        mock_session = AsyncMock()
+        mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_repo = AsyncMock()
+        mock_repo.get_all_active = AsyncMock(return_value=users)
+        mock_repo.get_active_debt = AsyncMock(return_value=debt)
+        mock_repo.get_active_goal = AsyncMock(return_value=goal)
+        mock_repo.mark_stage_check_sent = AsyncMock()
+        return mock_factory, mock_repo
+
+    async def test_stage1_user_receives_check_when_bot_provided(self):
+        user = make_user(stage=1, stage_check_sent_at=None)
+        mock_factory, mock_repo = self._patch_session([user])
+
+        mock_bot = AsyncMock()
+        mock_bot.send_message = AsyncMock()
+        delivery = MagicMock()
+        delivery.send = AsyncMock()
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.scheduler.weekly_runner.UserRepository", return_value=mock_repo):
+                await send_weekly_digest(delivery, bot=mock_bot)
+
+        mock_bot.send_message.assert_called_once()
+        call_kwargs = mock_bot.send_message.call_args.kwargs
+        assert call_kwargs["chat_id"] == user.telegram_chat_id
+        assert "1.000" in call_kwargs["text"]
+        mock_repo.mark_stage_check_sent.assert_called_once_with(user.id)
+
+    async def test_stage1_user_no_check_when_sent_recently(self):
+        recent = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=2)
+        user = make_user(stage=1, stage_check_sent_at=recent)
+        mock_factory, mock_repo = self._patch_session([user])
+
+        mock_bot = AsyncMock()
+        delivery = MagicMock()
+        delivery.send = AsyncMock()
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.scheduler.weekly_runner.UserRepository", return_value=mock_repo):
+                await send_weekly_digest(delivery, bot=mock_bot)
+
+        mock_bot.send_message.assert_not_called()
+        mock_repo.mark_stage_check_sent.assert_not_called()
+
+    async def test_no_bot_no_check_sent(self):
+        user = make_user(stage=1, stage_check_sent_at=None)
+        mock_factory, mock_repo = self._patch_session([user])
+
+        delivery = MagicMock()
+        delivery.send = AsyncMock()
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.scheduler.weekly_runner.UserRepository", return_value=mock_repo):
+                await send_weekly_digest(delivery, bot=None)
+
+        mock_repo.mark_stage_check_sent.assert_not_called()
