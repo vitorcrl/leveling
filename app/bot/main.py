@@ -18,6 +18,7 @@ from telegram import Bot
 from telegram.ext import Application
 
 from app.adapters.delivery.telegram_adapter import TelegramAdapter
+from app.bot.commands import build_command_handlers
 from app.bot.onboarding import build_onboarding_handler
 from app.core.config import get_settings
 from app.scheduler.journey_runner import run_for_all_stage2_users
@@ -52,7 +53,7 @@ async def _scheduler_loop(bot: Bot) -> None:
         if _should_run(_WEEKLY_DIGEST_WEEKDAY, _WEEKLY_DIGEST_HOUR, last_weekly):
             logger.info("scheduler: firing weekly digest")
             try:
-                result = await send_weekly_digest(delivery)
+                result = await send_weekly_digest(delivery, bot=bot)
                 logger.info("scheduler: weekly digest done — %s", result)
             except Exception:
                 logger.exception("scheduler: weekly digest failed")
@@ -72,6 +73,8 @@ def build_application() -> Application:
     settings = get_settings()
     app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
     app.add_handler(build_onboarding_handler())
+    for handler in build_command_handlers():
+        app.add_handler(handler)
     return app
 
 
