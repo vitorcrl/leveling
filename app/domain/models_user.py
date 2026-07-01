@@ -44,6 +44,7 @@ class User(Base):
     risk_profile = Column(String(20), nullable=True)        # 'conservador' | 'moderado'
     onboarding_complete = Column(Boolean, nullable=False, default=False)
     last_interaction_at = Column(DateTime, nullable=True)
+    stage_check_sent_at = Column(DateTime, nullable=True)  # última vez que perguntamos sobre promoção de stage
     created_at = Column(DateTime, default=_utc_now, nullable=False)
     updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
 
