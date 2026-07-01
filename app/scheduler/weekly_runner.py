@@ -14,15 +14,18 @@ Stage 2 — investindo em FIIs: resumo da carteira + sugestão de aporte
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from decimal import Decimal
 
-from telegram import Bot
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.adapters.delivery.telegram_adapter import TelegramAdapter
 from app.core.config import get_settings
 from app.domain.models_user import User, UserDebt, UserGoal
 from app.domain.ports import DeliveryPort
 from app.repositories.user_repository import UserRepository
+
+_STAGE_CHECK_COOLDOWN_DAYS = 6  # não pergunta mais de uma vez por semana
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +83,35 @@ def _build_stage2_message(user: User, goal: UserGoal | None) -> str:
     return "\n".join(lines)
 
 
-async def send_weekly_digest(delivery: DeliveryPort) -> dict[str, int]:
+def _should_send_stage_check(user: User) -> bool:
+    if user.stage_check_sent_at is None:
+        return True
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    days_since = (now - user.stage_check_sent_at).days
+    return days_since >= _STAGE_CHECK_COOLDOWN_DAYS
+
+
+async def _send_stage1_check(bot: Bot, repo: UserRepository, user: User) -> None:
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("Sim, já tenho! 🎉", callback_data="stage_check_sim"),
+            InlineKeyboardButton("Ainda não 😅", callback_data="stage_check_nao"),
+        ]
+    ])
+    await bot.send_message(
+        chat_id=user.telegram_chat_id,
+        text=(
+            "💡 *Pergunta rápida:*\n\n"
+            "Você já tem R$ 1.000 guardados na sua caixinha?"
+        ),
+        parse_mode="Markdown",
+        reply_markup=keyboard,
+    )
+    await repo.mark_stage_check_sent(user.id)
+    logger.info("weekly_runner: sent stage-1 check to chat_id=%s", user.telegram_chat_id)
+
+
+async def send_weekly_digest(delivery: DeliveryPort, bot: Bot | None = None) -> dict[str, int]:
     from app.core.database import AsyncSessionFactory
 
     sent = skipped = errors = 0
@@ -100,6 +131,8 @@ async def send_weekly_digest(delivery: DeliveryPort) -> dict[str, int]:
                     message = _build_stage0_message(user, debt, goal)
                 elif user.stage == 1:
                     message = _build_stage1_message(user, goal)
+                    if bot is not None and _should_send_stage_check(user):
+                        await _send_stage1_check(bot, repo, user)
                 elif user.stage == 2:
                     message = _build_stage2_message(user, goal)
                 else:
@@ -131,7 +164,7 @@ async def run() -> None:
     settings = get_settings()
     bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
     delivery = TelegramAdapter(bot)
-    result = await send_weekly_digest(delivery)
+    result = await send_weekly_digest(delivery, bot=bot)
     logger.info("weekly_runner: done — %s", result)
 
 
