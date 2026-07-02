@@ -14,7 +14,6 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
-from telegram import Bot
 from telegram.ext import Application
 
 from app.adapters.delivery.telegram_adapter import TelegramAdapter
@@ -55,18 +54,18 @@ async def _scheduler_loop(bot: Bot) -> None:
             try:
                 result = await send_weekly_digest(delivery, bot=bot)
                 logger.info("scheduler: weekly digest done — %s", result)
+                last_weekly = now
             except Exception:
                 logger.exception("scheduler: weekly digest failed")
-            last_weekly = now
 
         if _should_run(_FII_PIPELINE_WEEKDAY, _FII_PIPELINE_HOUR, last_fii):
             logger.info("scheduler: firing FII pipeline")
             try:
                 result = await run_for_all_stage2_users()
                 logger.info("scheduler: FII pipeline done — %s", result)
+                last_fii = now
             except Exception:
                 logger.exception("scheduler: FII pipeline failed")
-            last_fii = now
 
 
 def build_application() -> Application:
@@ -79,16 +78,14 @@ def build_application() -> Application:
 
 
 async def run() -> None:
-    settings = get_settings()
     application = build_application()
-    bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
 
     async with application:
         await application.start()
         await application.updater.start_polling(drop_pending_updates=True)
         logger.info("Bot iniciado — aguardando mensagens...")
 
-        await _scheduler_loop(bot)
+        await _scheduler_loop(application.bot)
 
 
 if __name__ == "__main__":
