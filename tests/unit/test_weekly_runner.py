@@ -121,6 +121,17 @@ class TestBuildStage2Message:
         msg = _build_stage2_message(make_user(2), make_goal("Monster"))
         assert "Monster" in msg
 
+    def test_shows_fii_suggestions(self):
+        msg = _build_stage2_message(make_user(2), None)
+        assert "Sugestões da semana" in msg
+        assert "11" in msg  # todo ticker de FII termina com 11
+
+    def test_suggestions_respect_profile(self):
+        user = make_user(2)
+        user.risk_profile = "arrojado"
+        msg = _build_stage2_message(user, None)
+        assert "Sugestões da semana" in msg
+
 
 # ---------------------------------------------------------------------------
 # send_weekly_digest — fluxo completo mockado
