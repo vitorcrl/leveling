@@ -1,0 +1,122 @@
+[
+  {
+    "ticker": "MXRF11",
+    "nome": "Maxi Renda",
+    "tipo": "papel",
+    "perfis": ["conservador", "moderado", "arrojado"]
+  },
+  {
+    "ticker": "KNCR11",
+    "nome": "Kinea Rendimentos Imobiliários",
+    "tipo": "papel",
+    "perfis": ["conservador", "moderado", "arrojado"]
+  },
+  {
+    "ticker": "CPTS11",
+    "nome": "Capitânia Securities",
+    "tipo": "papel",
+    "perfis": ["conservador", "moderado", "arrojado"]
+  },
+  {
+    "ticker": "KNIP11",
+    "nome": "Kinea Índice de Preços",
+    "tipo": "papel",
+    "perfis": ["conservador", "moderado"]
+  },
+  {
+    "ticker": "VRTA11",
+    "nome": "Votorantim Recebíveis",
+    "tipo": "papel",
+    "perfis": ["conservador", "moderado"]
+  },
+  {
+    "ticker": "HGLG11",
+    "nome": "CSHG Logística",
+    "tipo": "tijolo",
+    "perfis": ["conservador", "moderado", "arrojado"]
+  },
+  {
+    "ticker": "XPLG11",
+    "nome": "XP Log",
+    "tipo": "tijolo",
+    "perfis": ["conservador", "moderado", "arrojado"]
+  },
+  {
+    "ticker": "BRCO11",
+    "nome": "Bresco Logística",
+    "tipo": "tijolo",
+    "perfis": ["conservador", "moderado"]
+  },
+  {
+    "ticker": "BTLG11",
+    "nome": "BTG Pactual Logística",
+    "tipo": "tijolo",
+    "perfis": ["conservador", "moderado", "arrojado"]
+  },
+  {
+    "ticker": "HGRU11",
+    "nome": "CSHG Renda Urbana",
+    "tipo": "tijolo",
+    "perfis": ["conservador", "moderado"]
+  },
+  {
+    "ticker": "PVBI11",
+    "nome": "VBI Prime Properties",
+    "tipo": "tijolo",
+    "perfis": ["moderado", "arrojado"]
+  },
+  {
+    "ticker": "KNRI11",
+    "nome": "Kinea Renda Imobiliária",
+    "tipo": "tijolo",
+    "perfis": ["moderado", "arrojado"]
+  },
+  {
+    "ticker": "RBRF11",
+    "nome": "RBR Alpha Multiestratégia",
+    "tipo": "fof",
+    "perfis": ["moderado", "arrojado"]
+  },
+  {
+    "ticker": "BCFF11",
+    "nome": "BTG Pactual Fundo de Fundos",
+    "tipo": "fof",
+    "perfis": ["moderado", "arrojado"]
+  },
+  {
+    "ticker": "KFOF11",
+    "nome": "Kinea Fundo de Fundos",
+    "tipo": "fof",
+    "perfis": ["moderado", "arrojado"]
+  },
+  {
+    "ticker": "HGFF11",
+    "nome": "CSHG Fundo de FIIs",
+    "tipo": "fof",
+    "perfis": ["conservador", "moderado"]
+  },
+  {
+    "ticker": "XPML11",
+    "nome": "XP Malls",
+    "tipo": "tijolo",
+    "perfis": ["moderado", "arrojado"]
+  },
+  {
+    "ticker": "VISC11",
+    "nome": "Vinci Shopping Centers",
+    "tipo": "tijolo",
+    "perfis": ["moderado", "arrojado"]
+  },
+  {
+    "ticker": "RBRR11",
+    "nome": "RBR High Grade",
+    "tipo": "papel",
+    "perfis": ["conservador", "moderado"]
+  },
+  {
+    "ticker": "IRDM11",
+    "nome": "Iridium Recebíveis Imobiliários",
+    "tipo": "papel",
+    "perfis": ["moderado", "arrojado"]
+  }
+]
