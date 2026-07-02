@@ -35,12 +35,6 @@ class FII:
         return _TIPO_LABEL.get(self.tipo, self.tipo)
 
 
-def _load_catalog() -> list[FII]:
-    with _DATA_FILE.open(encoding="utf-8") as f:
-        data = json.load(f)
-    return [FII(ticker=d["ticker"], nome=d["nome"], tipo=d["tipo"]) for d in data]
-
-
 def _eligible(data: list[dict], risk_profile: str) -> list[dict]:
     profile = _PROFILE_ALIASES.get((risk_profile or "").lower(), "conservador")
     return [d for d in data if profile in d.get("perfis", [])]

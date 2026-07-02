@@ -77,6 +77,14 @@ async def cmd_atualizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             )
             return
 
+        debt = await repo.get_active_debt(user.id)
+        if debt is None:
+            await update.message.reply_text(
+                "Não encontrei uma dívida ativa no seu perfil. "
+                "Se precisar, manda /start para refazer o onboarding."
+            )
+            return
+
         if amount == 0:
             await repo.promote_stage(user.id, new_stage=1)
             await update.message.reply_text(
@@ -88,22 +96,20 @@ async def cmd_atualizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             logger.info("cmd_atualizar: chat_id=%s promoted to stage 1", chat_id)
             return
 
-        debt = await repo.update_debt_amount(user.id, amount)
-        if debt is None:
-            await update.message.reply_text(
-                "Não encontrei uma dívida ativa no seu perfil. "
-                "Se precisar, manda /start para refazer o onboarding."
-            )
-            return
+        await repo.update_debt_amount(user.id, amount)
+        debt = await repo.get_active_debt(user.id)
 
         paid = max(debt.initial_amount - debt.current_amount, Decimal(0))
         pct = (paid / debt.initial_amount * 100) if debt.initial_amount else Decimal(0)
         pct_str = f"{pct:.1f}".replace(".", ",")
 
+        def _fmt(v: Decimal) -> str:
+            return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
         await update.message.reply_text(
             f"✅ Saldo atualizado!\n\n"
-            f"Dívida inicial: R$ {debt.initial_amount:,.2f}\n"
-            f"Saldo atual: R$ {amount:,.2f}\n"
+            f"Dívida inicial: {_fmt(debt.initial_amount)}\n"
+            f"Saldo atual: {_fmt(amount)}\n"
             f"Pago até agora: {pct_str}%\n\n"
             f"Continue assim! Quando chegar em 0, manda /atualizar 0 para avançar. 💪"
         )
