@@ -21,6 +21,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.adapters.delivery.telegram_adapter import TelegramAdapter
 from app.core.config import get_settings
+from app.domain.fii_catalog import suggest_fiis
 from app.domain.models_user import User, UserDebt, UserGoal
 from app.domain.ports import DeliveryPort
 from app.repositories.user_repository import UserRepository
@@ -75,6 +76,13 @@ def _build_stage2_message(user: User, goal: UserGoal | None) -> str:
     lines.append(f"Aporte mensal: {_fmt(user.monthly_budget)}")
     if goal:
         lines.append(f"\nSua meta: *{goal.name}* ({_fmt(goal.goal_value_monthly)}/mês)")
+
+    suggestions = suggest_fiis(user.risk_profile or "conservador", n=3)
+    if suggestions:
+        lines.append("\n*Sugestões da semana para o seu perfil:*")
+        for fii in suggestions:
+            lines.append(f"• {fii.ticker} — {fii.nome} ({fii.tipo_label})")
+
     lines.append(
         "\nSeu pipeline de FIIs roda toda semana. "
         "Se houver alertas na sua carteira, você recebe um aviso separado."
