@@ -72,7 +72,8 @@ class TestCmdAtualizar:
         mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
         mock_repo = AsyncMock()
         mock_repo.get_by_chat_id = AsyncMock(return_value=user)
-        mock_repo.update_debt_amount = AsyncMock(return_value=debt)
+        mock_repo.get_active_debt = AsyncMock(return_value=debt)
+        mock_repo.update_debt_amount = AsyncMock()
         mock_repo.promote_stage = AsyncMock()
         return mock_factory, mock_repo
 
@@ -94,7 +95,8 @@ class TestCmdAtualizar:
         update = make_update()
         ctx = make_context(args=["0"])
         user = make_user(stage=0)
-        mock_factory, mock_repo = self._patch(user)
+        debt = make_debt()
+        mock_factory, mock_repo = self._patch(user, debt=debt)
 
         with patch("app.core.database.AsyncSessionFactory", mock_factory):
             with patch("app.bot.commands.UserRepository", return_value=mock_repo):
@@ -103,6 +105,20 @@ class TestCmdAtualizar:
         mock_repo.promote_stage.assert_called_once_with(user.id, new_stage=1)
         msg = update.message.reply_text.call_args.args[0]
         assert "Estágio 1" in msg
+
+    async def test_zero_without_debt_blocks_promotion(self):
+        update = make_update()
+        ctx = make_context(args=["0"])
+        user = make_user(stage=0)
+        mock_factory, mock_repo = self._patch(user, debt=None)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_atualizar(update, ctx)
+
+        mock_repo.promote_stage.assert_not_called()
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/start" in msg
 
     async def test_valid_amount_updates_debt(self):
         update = make_update()
@@ -118,6 +134,22 @@ class TestCmdAtualizar:
         mock_repo.update_debt_amount.assert_called_once_with(user.id, Decimal("3500"))
         msg = update.message.reply_text.call_args.args[0]
         assert "atualizado" in msg.lower()
+
+    async def test_reply_uses_br_number_format(self):
+        update = make_update()
+        ctx = make_context(args=["3500"])
+        user = make_user(stage=0)
+        debt = make_debt(initial="5000", current="3500")
+        mock_factory, mock_repo = self._patch(user, debt=debt)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_atualizar(update, ctx)
+
+        msg = update.message.reply_text.call_args.args[0]
+        assert "5.000,00" in msg
+        assert "3.500,00" in msg
+        assert "5,000.00" not in msg
 
     async def test_wrong_stage_replies_with_stage_info(self):
         update = make_update()
