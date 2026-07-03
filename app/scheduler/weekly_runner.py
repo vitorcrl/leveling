@@ -27,6 +27,7 @@ from app.domain.ports import DeliveryPort
 from app.repositories.user_repository import UserRepository
 
 _STAGE_CHECK_COOLDOWN_DAYS = 6  # não pergunta mais de uma vez por semana
+_DEBT_CELEBRATION_STEP = Decimal("100")  # celebra a cada R$100 quitados
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,14 @@ def _fmt(value: Decimal | None) -> str:
     if value is None:
         return "—"
     return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _debt_celebration_milestone(paid: Decimal) -> Decimal:
+    """Maior múltiplo de R$100 já quitado. R$0 se paid < R$100."""
+    if paid < _DEBT_CELEBRATION_STEP:
+        return Decimal(0)
+    steps = int(paid // _DEBT_CELEBRATION_STEP)
+    return Decimal(steps) * _DEBT_CELEBRATION_STEP
 
 
 def _build_stage0_message(user: User, debt: UserDebt | None, goal: UserGoal | None) -> str:
@@ -46,6 +55,16 @@ def _build_stage0_message(user: User, debt: UserDebt | None, goal: UserGoal | No
         lines.append(f"Saldo atual: {_fmt(debt.current_amount)}")
         pct_str = f"{pct:.1f}".replace(".", ",")
         lines.append(f"Pago até agora: {_fmt(paid)} ({pct_str}%)")
+
+        milestone = _debt_celebration_milestone(paid)
+        last_celebrated = debt.last_celebrated_amount or Decimal(0)
+        if milestone > last_celebrated:
+            juros_mes = (milestone / _DEBT_CELEBRATION_STEP) * Decimal("12")
+            lines.append(
+                f"\n🎉 Você já quitou {_fmt(milestone)}! "
+                f"Isso são ~{_fmt(juros_mes)}/mês a menos de juros — já é renda, "
+                "só que no sentido inverso. 💪"
+            )
     else:
         lines.append("\nAtualize seu saldo de dívida para acompanhar o progresso.")
     lines.append(f"\nAporte mensal planejado: {_fmt(user.monthly_budget)}")
@@ -137,6 +156,11 @@ async def send_weekly_digest(delivery: DeliveryPort, bot: Bot | None = None) -> 
 
                 if user.stage == 0:
                     message = _build_stage0_message(user, debt, goal)
+                    if debt is not None:
+                        paid = max(debt.initial_amount - debt.current_amount, Decimal(0))
+                        milestone = _debt_celebration_milestone(paid)
+                        if milestone > (debt.last_celebrated_amount or Decimal(0)):
+                            await repo.mark_debt_celebrated(debt.id, milestone)
                 elif user.stage == 1:
                     message = _build_stage1_message(user, goal)
                     if bot is not None and _should_send_stage_check(user):
