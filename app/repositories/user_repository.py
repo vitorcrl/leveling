@@ -112,6 +112,13 @@ class UserRepository:
         await self._session.commit()
         return debt
 
+    async def mark_debt_celebrated(self, debt_id, milestone: Decimal) -> None:
+        """Registra o último múltiplo de R$100 quitado já celebrado no digest."""
+        result = await self._session.execute(select(UserDebt).where(UserDebt.id == debt_id))
+        debt = result.scalar_one()
+        debt.last_celebrated_amount = milestone
+        await self._session.commit()
+
     async def promote_stage(self, user_id, new_stage: int) -> User:
         """Promove o usuário para o novo stage e limpa stage_check_sent_at."""
         result = await self._session.execute(select(User).where(User.id == user_id))
