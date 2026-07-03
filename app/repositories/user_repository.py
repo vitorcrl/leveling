@@ -77,11 +77,22 @@ class UserRepository:
         return user
 
     async def get_all_active(self) -> list[User]:
-        """Retorna todos os usuários com onboarding completo."""
+        """Retorna usuários com onboarding completo que não pausaram os envios."""
         result = await self._session.execute(
-            select(User).where(User.onboarding_complete.is_(True))
+            select(User).where(
+                User.onboarding_complete.is_(True),
+                User.paused.is_(False),
+            )
         )
         return list(result.scalars().all())
+
+    async def set_paused(self, user_id, paused: bool) -> User:
+        """Liga/desliga o envio proativo do digest — controle explícito via /pausar e /retomar."""
+        result = await self._session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one()
+        user.paused = paused
+        await self._session.commit()
+        return user
 
     async def get_active_debt(self, user_id) -> UserDebt | None:
         result = await self._session.execute(
