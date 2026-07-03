@@ -48,6 +48,7 @@ class User(Base):
     risk_profile = Column(String(20), nullable=True)        # 'conservador' | 'moderado'
     onboarding_complete = Column(Boolean, nullable=False, default=False)
     paused = Column(Boolean, nullable=False, default=False)
+    savings_amount = Column(Numeric(12, 2), nullable=True)   # dinheiro guardado declarado no onboarding
     last_interaction_at = Column(DateTime, nullable=True)
     stage_check_sent_at = Column(DateTime, nullable=True)  # última vez que perguntamos sobre promoção de stage
     created_at = Column(DateTime, default=_utc_now, nullable=False)
