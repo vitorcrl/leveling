@@ -14,6 +14,7 @@ from app.scheduler.weekly_runner import (
     _build_stage0_message,
     _build_stage1_message,
     _build_stage2_message,
+    _debt_celebration_milestone,
     _fmt,
     _should_send_stage_check,
     send_weekly_digest,
@@ -31,10 +32,18 @@ def make_user(stage: int = 0, budget: str = "500", stage_check_sent_at=None) -> 
     return user
 
 
-def make_debt(initial: str = "5000", current: str = "3000") -> MagicMock:
+def make_debt(
+    initial: str = "5000",
+    current: str = "3000",
+    last_celebrated_amount: str | None = None,
+) -> MagicMock:
     debt = MagicMock()
+    debt.id = "debt-uuid-1"
     debt.initial_amount = Decimal(initial)
     debt.current_amount = Decimal(current)
+    debt.last_celebrated_amount = (
+        Decimal(last_celebrated_amount) if last_celebrated_amount is not None else None
+    )
     return debt
 
 
@@ -85,6 +94,42 @@ class TestBuildStage0Message:
     def test_no_debt_shows_update_prompt(self):
         msg = _build_stage0_message(make_user(0), None, None)
         assert "Atualize" in msg
+
+    def test_celebrates_new_milestone(self):
+        debt = make_debt("5000", "4880", last_celebrated_amount=None)  # paid = 120
+        msg = _build_stage0_message(make_user(0), debt, None)
+        assert "🎉" in msg
+        assert "100" in msg
+
+    def test_no_celebration_below_first_milestone(self):
+        debt = make_debt("5000", "4950", last_celebrated_amount=None)  # paid = 50
+        msg = _build_stage0_message(make_user(0), debt, None)
+        assert "🎉" not in msg
+
+    def test_no_repeat_celebration_for_same_milestone(self):
+        debt = make_debt("5000", "4880", last_celebrated_amount="100")  # paid = 120, já celebrado
+        msg = _build_stage0_message(make_user(0), debt, None)
+        assert "🎉" not in msg
+
+    def test_celebrates_next_milestone_after_previous(self):
+        debt = make_debt("5000", "4750", last_celebrated_amount="100")  # paid = 250
+        msg = _build_stage0_message(make_user(0), debt, None)
+        assert "🎉" in msg
+        assert "200" in msg
+
+
+class TestDebtCelebrationMilestone:
+    def test_below_first_step_returns_zero(self):
+        assert _debt_celebration_milestone(Decimal("50")) == Decimal(0)
+
+    def test_exact_step_returns_step(self):
+        assert _debt_celebration_milestone(Decimal("100")) == Decimal("100")
+
+    def test_between_steps_returns_lower_multiple(self):
+        assert _debt_celebration_milestone(Decimal("250")) == Decimal("200")
+
+    def test_zero_returns_zero(self):
+        assert _debt_celebration_milestone(Decimal("0")) == Decimal(0)
 
 
 class TestBuildStage1Message:
@@ -227,6 +272,44 @@ class TestSendWeeklyDigest:
         call_kwargs = delivery.send.call_args
         assert call_kwargs.kwargs["chat_id"] == 42
         assert "Estágio 0" in call_kwargs.args[0]
+
+    async def test_marks_debt_celebrated_on_new_milestone(self):
+        user = make_user(0)
+        debt = make_debt("5000", "4880", last_celebrated_amount=None)  # paid = 120
+
+        with patch("app.core.database.AsyncSessionFactory") as mock_factory:
+            mock_session = AsyncMock()
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            mock_repo = AsyncMock()
+            mock_repo.get_all_active = AsyncMock(return_value=[user])
+            mock_repo.get_active_debt = AsyncMock(return_value=debt)
+            mock_repo.get_active_goal = AsyncMock(return_value=None)
+
+            with patch("app.scheduler.weekly_runner.UserRepository", return_value=mock_repo):
+                await send_weekly_digest(self._make_delivery())
+
+        mock_repo.mark_debt_celebrated.assert_called_once_with(debt.id, Decimal("100"))
+
+    async def test_does_not_mark_celebrated_when_no_new_milestone(self):
+        user = make_user(0)
+        debt = make_debt("5000", "4880", last_celebrated_amount="100")  # paid = 120, já celebrado
+
+        with patch("app.core.database.AsyncSessionFactory") as mock_factory:
+            mock_session = AsyncMock()
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            mock_repo = AsyncMock()
+            mock_repo.get_all_active = AsyncMock(return_value=[user])
+            mock_repo.get_active_debt = AsyncMock(return_value=debt)
+            mock_repo.get_active_goal = AsyncMock(return_value=None)
+
+            with patch("app.scheduler.weekly_runner.UserRepository", return_value=mock_repo):
+                await send_weekly_digest(self._make_delivery())
+
+        mock_repo.mark_debt_celebrated.assert_not_called()
 
     async def test_unknown_stage_increments_skipped_not_sent(self):
         user = make_user(99)  # stage inválido
