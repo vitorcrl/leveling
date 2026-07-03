@@ -66,45 +66,56 @@ async def _run_for_user(
     )
 
 
-async def run_for_all_stage2_users(run_date: date | None = None) -> dict[str, int]:
+async def run_for_all_stage2_users(
+    run_date: date | None = None,
+    bot: Bot | None = None,
+) -> dict[str, int]:
     from app.core.database import AsyncSessionFactory
 
     settings = get_settings()
-    bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
-    delivery = TelegramAdapter(bot)
-    narrator = ClaudeHaikuNarrator(api_key=settings.ANTHROPIC_API_KEY)
-    pipeline = AssetPipeline(
-        data=BrapiDataAdapter(base_url=settings.BRAPI_BASE_URL, token=settings.BRAPI_TOKEN),
-        rules=AssetRuleSet(settings=settings),
-        scorer=WeightedScoreEngine(),
-        narrator=narrator,
-        delivery=delivery,
-    )
+    owns_bot = bot is None
 
-    sent = errors = 0
+    async def _run(bot: Bot) -> dict[str, int]:
+        delivery = TelegramAdapter(bot)
+        narrator = ClaudeHaikuNarrator(api_key=settings.ANTHROPIC_API_KEY)
+        pipeline = AssetPipeline(
+            data=BrapiDataAdapter(base_url=settings.BRAPI_BASE_URL, token=settings.BRAPI_TOKEN),
+            rules=AssetRuleSet(settings=settings),
+            scorer=WeightedScoreEngine(),
+            narrator=narrator,
+            delivery=delivery,
+        )
 
-    async with AsyncSessionFactory() as session:
-        users = await UserRepository(session).get_all_active()
-        stage2_users = [u for u in users if u.stage == 2]
+        sent = errors = 0
 
-        logger.info("journey_runner: %d stage-2 users found", len(stage2_users))
+        async with AsyncSessionFactory() as session:
+            users = await UserRepository(session).get_all_active()
+            stage2_users = [u for u in users if u.stage == 2]
 
-        for user in stage2_users:
-            async with AsyncSessionFactory() as asset_session:
-                asset_repo = AssetRepository(asset_session)
-                try:
-                    await _run_for_user(user.telegram_chat_id, pipeline, asset_repo, run_date)
-                    sent += 1
-                    logger.info(
-                        "journey_runner: sent FII digest to chat_id=%s", user.telegram_chat_id
-                    )
-                except Exception:
-                    errors += 1
-                    logger.exception(
-                        "journey_runner: failed for chat_id=%s", user.telegram_chat_id
-                    )
+            logger.info("journey_runner: %d stage-2 users found", len(stage2_users))
 
-    return {"sent": sent, "errors": errors}
+            for user in stage2_users:
+                async with AsyncSessionFactory() as asset_session:
+                    asset_repo = AssetRepository(asset_session)
+                    try:
+                        await _run_for_user(user.telegram_chat_id, pipeline, asset_repo, run_date)
+                        sent += 1
+                        logger.info(
+                            "journey_runner: sent FII digest to chat_id=%s",
+                            user.telegram_chat_id,
+                        )
+                    except Exception:
+                        errors += 1
+                        logger.exception(
+                            "journey_runner: failed for chat_id=%s", user.telegram_chat_id
+                        )
+
+        return {"sent": sent, "errors": errors}
+
+    if owns_bot:
+        async with Bot(token=settings.TELEGRAM_BOT_TOKEN) as owned_bot:
+            return await _run(owned_bot)
+    return await _run(bot)
 
 
 if __name__ == "__main__":
