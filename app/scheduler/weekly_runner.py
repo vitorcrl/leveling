@@ -170,9 +170,9 @@ async def send_weekly_digest(delivery: DeliveryPort, bot: Bot | None = None) -> 
 
 async def run() -> None:
     settings = get_settings()
-    bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
-    delivery = TelegramAdapter(bot)
-    result = await send_weekly_digest(delivery, bot=bot)
+    async with Bot(token=settings.TELEGRAM_BOT_TOKEN) as bot:
+        delivery = TelegramAdapter(bot)
+        result = await send_weekly_digest(delivery, bot=bot)
     logger.info("weekly_runner: done — %s", result)
 
 
