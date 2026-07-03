@@ -16,6 +16,11 @@ from app.bot.onboarding import (
     ASK_GOAL_VALUE,
     ASK_PORTFOLIO,
     ASK_PROFILE,
+    ASK_SAVINGS,
+    _CALLBACK_CONSERVADOR,
+    _CALLBACK_DEBT_NAO,
+    _CALLBACK_DEBT_SIM,
+    _CALLBACK_MODERADO,
     _DATA,
     _parse_amount,
     _parse_tickers,
@@ -26,7 +31,8 @@ from app.bot.onboarding import (
     ask_goal_value,
     ask_portfolio,
     ask_portfolio_skip,
-    ask_profile,
+    ask_profile_callback,
+    ask_savings,
     cancel,
     start,
 )
@@ -38,6 +44,17 @@ def make_update(text: str, user_id: int = 123456) -> MagicMock:
     update.message.text = text
     update.message.reply_text = AsyncMock()
     update.effective_user.id = user_id
+    update.callback_query = None
+    return update
+
+
+def make_callback_update(data: str, user_id: int = 123456) -> MagicMock:
+    update = MagicMock()
+    update.effective_user.id = user_id
+    update.message = None
+    update.callback_query.data = data
+    update.callback_query.answer = AsyncMock()
+    update.callback_query.edit_message_text = AsyncMock()
     return update
 
 
@@ -76,6 +93,10 @@ class TestParseAmount:
     def test_returns_none_for_negative(self):
         assert _parse_amount("-500") is None
 
+    def test_ignores_extra_text_after_number(self):
+        # "Sim 1000" — usuário mandou resposta junto com o valor
+        assert _parse_amount("Sim 1000") is None  # parse_amount recebe só o número já limpo
+
 
 class TestParseTickers:
     def test_single_ticker(self):
@@ -107,30 +128,41 @@ class TestStart:
         ctx = make_context()
         result = await start(update, ctx)
         assert result == ASK_DEBT
-        update.message.reply_text.assert_called_once()
+        assert update.message.reply_text.call_count == 2  # apresentação + pergunta de dívida
         assert ctx.user_data[_DATA] == {}
+
+    async def test_first_message_introduces_leveling(self):
+        update = make_update("/start")
+        ctx = make_context()
+        await start(update, ctx)
+        first_call = update.message.reply_text.call_args_list[0].args[0]
+        assert "Leveling" in first_call
 
 
 class TestAskDebt:
     async def test_sim_stores_has_debt_true_and_returns_ask_debt_amount(self):
-        update = make_update("Sim")
+        update = make_callback_update(_CALLBACK_DEBT_SIM)
         ctx = make_context()
         result = await ask_debt(update, ctx)
         assert result == ASK_DEBT_AMOUNT
         assert ctx.user_data[_DATA]["has_debt"] is True
 
     async def test_nao_stores_has_debt_false_and_returns_ask_budget(self):
-        update = make_update("Não")
+        update = make_callback_update(_CALLBACK_DEBT_NAO)
         ctx = make_context()
         result = await ask_debt(update, ctx)
         assert result == ASK_BUDGET
         assert ctx.user_data[_DATA]["has_debt"] is False
 
-    async def test_case_insensitive(self):
-        update = make_update("SIM")
+    async def test_start_sends_inline_keyboard(self):
+        update = make_update("/start")
         ctx = make_context()
-        result = await ask_debt(update, ctx)
-        assert result == ASK_DEBT_AMOUNT
+        await start(update, ctx)
+        call_kwargs = update.message.reply_text.call_args.kwargs
+        markup = call_kwargs["reply_markup"]
+        button_datas = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        assert _CALLBACK_DEBT_SIM in button_datas
+        assert _CALLBACK_DEBT_NAO in button_datas
 
 
 class TestAskDebtAmount:
@@ -150,18 +182,55 @@ class TestAskDebtAmount:
 
 
 class TestAskBudget:
-    async def test_valid_amount_stored_and_proceeds(self):
+    async def test_with_debt_goes_to_ask_goal(self):
         update = make_update("1200")
-        ctx = make_context()
+        ctx = make_context({"has_debt": True})
         result = await ask_budget(update, ctx)
         assert result == ASK_GOAL
         assert ctx.user_data[_DATA]["monthly_budget"] == Decimal("1200")
+
+    async def test_without_debt_goes_to_ask_savings(self):
+        update = make_update("500")
+        ctx = make_context({"has_debt": False})
+        result = await ask_budget(update, ctx)
+        assert result == ASK_SAVINGS
+        assert ctx.user_data[_DATA]["monthly_budget"] == Decimal("500")
 
     async def test_invalid_amount_stays_on_same_state(self):
         update = make_update("não sei")
         ctx = make_context()
         result = await ask_budget(update, ctx)
         assert result == ASK_BUDGET
+
+
+class TestAskSavings:
+    async def test_valid_amount_stored_and_proceeds(self):
+        update = make_update("800")
+        ctx = make_context({"has_debt": False})
+        result = await ask_savings(update, ctx)
+        assert result == ASK_GOAL
+        assert ctx.user_data[_DATA]["savings_amount"] == Decimal("800")
+
+    async def test_zero_text_stored_as_zero(self):
+        update = make_update("0")
+        ctx = make_context({"has_debt": False})
+        result = await ask_savings(update, ctx)
+        assert result == ASK_GOAL
+        assert ctx.user_data[_DATA]["savings_amount"] == Decimal("0")
+
+    async def test_nao_stored_as_zero(self):
+        update = make_update("não")
+        ctx = make_context({"has_debt": False})
+        result = await ask_savings(update, ctx)
+        assert result == ASK_GOAL
+        assert ctx.user_data[_DATA]["savings_amount"] == Decimal("0")
+
+    async def test_nada_stored_as_zero(self):
+        update = make_update("nada")
+        ctx = make_context({"has_debt": False})
+        result = await ask_savings(update, ctx)
+        assert result == ASK_GOAL
+        assert ctx.user_data[_DATA]["savings_amount"] == Decimal("0")
 
 
 class TestAskGoal:
@@ -193,27 +262,41 @@ class TestAskGoalValue:
         result = await ask_goal_value(update, ctx)
         assert result == ASK_GOAL_VALUE
 
-
-class TestAskProfile:
-    async def test_conservador_stored(self):
-        update = make_update("Conservador")
+    async def test_sends_inline_keyboard_with_profiles(self):
+        update = make_update("50")
         ctx = make_context()
-        result = await ask_profile(update, ctx)
+        await ask_goal_value(update, ctx)
+        call_kwargs = update.message.reply_text.call_args.kwargs
+        assert "reply_markup" in call_kwargs
+        # verifica que os dois perfis estão no teclado inline
+        markup = call_kwargs["reply_markup"]
+        button_datas = [btn.callback_data for row in markup.inline_keyboard for btn in row]
+        assert _CALLBACK_CONSERVADOR in button_datas
+        assert _CALLBACK_MODERADO in button_datas
+
+
+class TestAskProfileCallback:
+    async def test_conservador_stored_and_proceeds(self):
+        update = make_callback_update(_CALLBACK_CONSERVADOR)
+        ctx = make_context()
+        result = await ask_profile_callback(update, ctx)
         assert result == ASK_PORTFOLIO
         assert ctx.user_data[_DATA]["risk_profile"] == "conservador"
 
-    async def test_moderado_stored(self):
-        update = make_update("Moderado")
+    async def test_moderado_stored_and_proceeds(self):
+        update = make_callback_update(_CALLBACK_MODERADO)
         ctx = make_context()
-        result = await ask_profile(update, ctx)
+        result = await ask_profile_callback(update, ctx)
         assert result == ASK_PORTFOLIO
         assert ctx.user_data[_DATA]["risk_profile"] == "moderado"
 
-    async def test_invalid_stays_on_same_state(self):
-        update = make_update("arrojado")
+    async def test_edits_message_with_profile_confirmation(self):
+        update = make_callback_update(_CALLBACK_CONSERVADOR)
         ctx = make_context()
-        result = await ask_profile(update, ctx)
-        assert result == ASK_PROFILE
+        await ask_profile_callback(update, ctx)
+        update.callback_query.edit_message_text.assert_called_once()
+        msg = update.callback_query.edit_message_text.call_args.args[0]
+        assert "Conservador" in msg
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +307,7 @@ def _base_data() -> dict:
     return {
         "has_debt": False,
         "monthly_budget": Decimal("1000"),
+        "savings_amount": Decimal("200"),
         "goal_name": "Netflix",
         "goal_value_monthly": Decimal("50"),
         "risk_profile": "conservador",
@@ -249,7 +333,8 @@ class TestAskPortfolio:
         assert result == ConversationHandler.END
         call_kwargs = mock_repo.save_onboarding.call_args.kwargs
         assert call_kwargs["portfolio_tickers"] == ["MXRF11", "KNCR11"]
-        assert call_kwargs["stage"] == 2  # sem dívida + com FIIs → stage 2
+        assert call_kwargs["stage"] == 2
+        assert call_kwargs["savings_amount"] == Decimal("200")
 
     async def test_invalid_tickers_stays_on_same_state(self):
         update = make_update("não tenho nenhum")
@@ -275,17 +360,16 @@ class TestAskPortfolio:
         assert result == ConversationHandler.END
         call_kwargs = mock_repo.save_onboarding.call_args.kwargs
         assert call_kwargs["portfolio_tickers"] == []
-        assert call_kwargs["stage"] == 1  # sem dívida + sem FIIs → stage 1
+        assert call_kwargs["stage"] == 1
 
 
 class TestStageCalculation:
-    """Verifica que o stage é calculado corretamente ao finalizar o onboarding."""
-
     async def _finish_with(self, has_debt: bool, tickers: list[str]) -> int:
         data = _base_data()
         data["has_debt"] = has_debt
         if has_debt:
             data["debt_amount"] = Decimal("3000")
+            data.pop("savings_amount", None)
         data["portfolio_tickers"] = tickers
 
         update = make_update("qualquer")
