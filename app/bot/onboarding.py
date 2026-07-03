@@ -6,11 +6,12 @@ Fluxo:
     → ASK_DEBT: tem dívida? (sim/não)
     → [sim] ASK_DEBT_AMOUNT: qual o valor?
     → ASK_BUDGET: qual o aporte mensal?
-    → ASK_GOAL: qual a sua meta? (ex: "Monster R$12/mês")
+    → [sem dívida] ASK_SAVINGS: já tem algum dinheiro guardado?
+    → ASK_GOAL: qual a sua meta?
     → ASK_GOAL_VALUE: quanto custa por mês?
-    → ASK_PROFILE: perfil de risco (conservador/moderado)
+    → ASK_PROFILE: perfil de risco (inline: conservador/moderado com explicação)
     → ASK_PORTFOLIO: já tem FIIs? (lista de tickers ou /pular)
-    → DONE: grava tudo, manda mensagem de boas-vindas
+    → DONE: grava tudo, manda mensagem de boas-vindas + comandos disponíveis
 
 Stage calculado na hora do commit:
   - Tem dívida         → 0
@@ -22,16 +23,23 @@ import logging
 import re
 from decimal import Decimal, InvalidOperation
 
-from telegram import ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
-from app.core.database import AsyncSessionFactory
-from app.repositories.user_repository import UserRepository
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardRemove,
+    Update,
+)
 from telegram.ext import (
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
     MessageHandler,
     filters,
 )
+
+from app.core.database import AsyncSessionFactory
+from app.repositories.user_repository import UserRepository
 
 logger = logging.getLogger(__name__)
 
@@ -40,40 +48,31 @@ logger = logging.getLogger(__name__)
     ASK_DEBT,
     ASK_DEBT_AMOUNT,
     ASK_BUDGET,
+    ASK_SAVINGS,
     ASK_GOAL,
     ASK_GOAL_VALUE,
     ASK_PROFILE,
     ASK_PORTFOLIO,
-) = range(7)
+) = range(8)
 
-# Chave para guardar dados parciais no context.user_data durante o onboarding
 _DATA = "onboarding"
 
-
-def _d(text: str) -> str:
-    """Remove teclado e retorna texto formatado."""
-    return text
-
-
-def _keyboard(*rows: tuple[str, ...]) -> ReplyKeyboardMarkup:
-    return ReplyKeyboardMarkup(
-        [[btn for btn in row] for row in rows],
-        one_time_keyboard=True,
-        resize_keyboard=True,
-    )
+_CALLBACK_DEBT_SIM = "onb_debt_sim"
+_CALLBACK_DEBT_NAO = "onb_debt_nao"
+_CALLBACK_CONSERVADOR = "profile_conservador"
+_CALLBACK_MODERADO = "profile_moderado"
 
 
 def _parse_amount(text: str) -> Decimal | None:
-    """Aceita '1500', '1.500', '1.500,50', '1500.50'. Retorna None se inválido."""
+    """Aceita '1500', '1.500', '1.500,50', '1500.50'. Retorna None se inválido ou zero."""
     cleaned = text.strip().replace("R$", "").replace(" ", "")
+    # pega só o primeiro token numérico caso venha "Sim 1000"
+    cleaned = re.split(r"\s+", cleaned)[0]
     if "," in cleaned and "." in cleaned:
-        # ex: 1.500,50 → separador de milhar + decimal BR
         cleaned = cleaned.replace(".", "").replace(",", ".")
     elif "," in cleaned:
-        # ex: 1500,50 → decimal BR
         cleaned = cleaned.replace(",", ".")
     elif re.match(r"^\d{1,3}(\.\d{3})+$", cleaned):
-        # ex: 1.500 ou 1.500.000 → separador de milhar sem decimal
         cleaned = cleaned.replace(".", "")
     try:
         value = Decimal(cleaned)
@@ -90,29 +89,43 @@ def _parse_tickers(text: str) -> list[str]:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data[_DATA] = {}
+
     await update.message.reply_text(
-        "Olá! Vou te ajudar a montar sua jornada financeira.\n\n"
-        "Primeira pergunta: você tem dívidas hoje? (cartão, cheque especial, empréstimo etc.)",
-        reply_markup=_keyboard(("Sim", "Não")),
+        "*Bem-vindo ao Leveling!* 🚀\n\n"
+        "Aqui você acompanha sua jornada financeira desde o vermelho até os primeiros investimentos.\n\n"
+        "São só algumas perguntas rápidas para montar o seu perfil. Vamos lá?",
+        parse_mode="Markdown",
+    )
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Sim, tenho", callback_data=_CALLBACK_DEBT_SIM),
+        InlineKeyboardButton("🙅 Não tenho", callback_data=_CALLBACK_DEBT_NAO),
+    ]])
+    await update.message.reply_text(
+        "Você tem dívidas hoje?\n"
+        "(cartão, cheque especial, empréstimo etc.)",
+        reply_markup=keyboard,
     )
     return ASK_DEBT
 
 
 async def ask_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    answer = update.message.text.strip().lower()
-    if answer in ("sim", "s", "yes"):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == _CALLBACK_DEBT_SIM:
         context.user_data[_DATA]["has_debt"] = True
-        await update.message.reply_text(
-            "Qual o valor total das suas dívidas? (ex: 5000 ou R$ 5.000)",
-            reply_markup=ReplyKeyboardRemove(),
+        await query.edit_message_text(
+            "Qual o valor total das suas dívidas?\n\n"
+            "Manda só o número, sem R$ ou pontos. Ex: 5000",
         )
         return ASK_DEBT_AMOUNT
     else:
         context.user_data[_DATA]["has_debt"] = False
-        await update.message.reply_text(
-            "Ótimo! Sem dívidas, você já está um passo à frente.\n\n"
-            "Quanto você consegue guardar por mês? (ex: 500 ou R$ 1.200)",
-            reply_markup=ReplyKeyboardRemove(),
+        await query.edit_message_text(
+            "Ótimo! Sem dívidas, você já está um passo à frente. 👏\n\n"
+            "Quanto você consegue guardar por mês?\n"
+            "Manda só o número. Ex: 500",
         )
         return ASK_BUDGET
 
@@ -121,14 +134,15 @@ async def ask_debt_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     amount = _parse_amount(update.message.text)
     if amount is None:
         await update.message.reply_text(
-            "Não entendi o valor. Tenta assim: 5000 ou R$ 5.000"
+            "Não entendi. Manda só o número, sem pontos ou vírgulas. Ex: 5000"
         )
         return ASK_DEBT_AMOUNT
 
     context.user_data[_DATA]["debt_amount"] = amount
     await update.message.reply_text(
-        "Entendido. Vamos focar em quitar isso!\n\n"
-        "Quanto você consegue guardar por mês para pagar a dívida? (ex: 500)"
+        "Entendido. Vamos focar em quitar isso! 💪\n\n"
+        "Quanto você consegue separar por mês para pagar a dívida?\n"
+        "Manda só o número. Ex: 500"
     )
     return ASK_BUDGET
 
@@ -137,15 +151,44 @@ async def ask_budget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     amount = _parse_amount(update.message.text)
     if amount is None:
         await update.message.reply_text(
-            "Não entendi. Manda o valor assim: 500 ou R$ 1.200"
+            "Não entendi. Manda só o número. Ex: 500"
         )
         return ASK_BUDGET
 
     context.user_data[_DATA]["monthly_budget"] = amount
+
+    # Quem tem dívida não passa pela pergunta de caixinha
+    if context.user_data[_DATA].get("has_debt"):
+        await update.message.reply_text(
+            "Legal! Agora me conta: qual é a sua primeira meta?\n\n"
+            "Pensa em algo concreto que o seu dinheiro vai pagar todo mês. "
+            "Por exemplo: Netflix, Academia, Monster, Aluguel.\n\n"
+            "Qual é a sua meta?"
+        )
+        return ASK_GOAL
+
     await update.message.reply_text(
-        "Legal! Agora me conta: qual é a sua primeira meta?\n\n"
-        "Pensa em algo pequeno que o seu dinheiro vai pagar todo mês. "
-        "Por exemplo: 'Netflix', 'Academia', 'Aluguel'.\n\n"
+        "Você já tem algum dinheiro guardado? 🏦\n\n"
+        "Pode ser na poupança, no Mercado Pago, no Nubank, em qualquer lugar.\n"
+        "Se sim, quanto? Se não tem nada ainda, manda 0."
+    )
+    return ASK_SAVINGS
+
+
+async def ask_savings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    # aceita "0", "não", "nada", "nenhum" como zero
+    if text.lower() in ("0", "não", "nao", "nada", "nenhum", "nenhu"):
+        savings = Decimal(0)
+    else:
+        savings = _parse_amount(text) or Decimal(0)
+
+    context.user_data[_DATA]["savings_amount"] = savings
+
+    await update.message.reply_text(
+        "Agora me conta: qual é a sua primeira meta?\n\n"
+        "Pensa em algo concreto que o seu dinheiro vai pagar todo mês. "
+        "Por exemplo: Netflix, Academia, Monster, Aluguel.\n\n"
         "Qual é a sua meta?"
     )
     return ASK_GOAL
@@ -159,7 +202,7 @@ async def ask_goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     context.user_data[_DATA]["goal_name"] = goal
     await update.message.reply_text(
-        f"'{goal}' — boa escolha!\n\n"
+        f"'{goal}' — boa escolha! 🎯\n\n"
         f"Quanto custa essa meta por mês? (ex: 50 ou R$ 129,90)"
     )
     return ASK_GOAL_VALUE
@@ -174,41 +217,52 @@ async def ask_goal_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ASK_GOAL_VALUE
 
     context.user_data[_DATA]["goal_value_monthly"] = amount
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🛡️ Conservador", callback_data=_CALLBACK_CONSERVADOR),
+            InlineKeyboardButton("⚖️ Moderado", callback_data=_CALLBACK_MODERADO),
+        ]
+    ])
     await update.message.reply_text(
-        "Último detalhe sobre investimentos: qual é o seu perfil?",
-        reply_markup=_keyboard(
-            ("Conservador",),
-            ("Moderado",),
-        ),
+        "Antes de escolher, entenda cada perfil:\n\n"
+        "🛡️ *Conservador* — segurança e previsibilidade.\n"
+        "FIIs de papel (CRI/CRA): renda consistente, menos volatilidade. "
+        "Ideal para quem está começando.\n\n"
+        "⚖️ *Moderado* — equilíbrio entre risco e retorno.\n"
+        "Mix de papel + logística/shopping: potencial de crescimento de cota "
+        "junto com renda mensal.\n\n"
+        "Qual é o seu perfil?",
+        parse_mode="Markdown",
+        reply_markup=keyboard,
     )
     return ASK_PROFILE
 
 
-async def ask_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    text = update.message.text.strip().lower()
-    if "conserv" in text:
+async def ask_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == _CALLBACK_CONSERVADOR:
         profile = "conservador"
-    elif "moder" in text:
-        profile = "moderado"
+        label = "🛡️ Conservador"
     else:
-        await update.message.reply_text(
-            "Escolhe uma das opções:",
-            reply_markup=_keyboard(("Conservador",), ("Moderado",)),
-        )
-        return ASK_PROFILE
+        profile = "moderado"
+        label = "⚖️ Moderado"
 
     context.user_data[_DATA]["risk_profile"] = profile
-    await update.message.reply_text(
+
+    await query.edit_message_text(
+        f"Perfil definido: *{label}*\n\n"
         "Você já tem algum FII na carteira?\n\n"
         "Se sim, manda os tickers separados por espaço ou vírgula. Ex: MXRF11 KNCR11\n"
         "Se não tem, manda /pular",
-        reply_markup=ReplyKeyboardRemove(),
+        parse_mode="Markdown",
     )
     return ASK_PORTFOLIO
 
 
 async def ask_portfolio_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handler para /pular no passo de FIIs."""
     context.user_data[_DATA]["portfolio_tickers"] = []
     return await _finish_onboarding(update, context)
 
@@ -227,6 +281,7 @@ async def ask_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def _finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     data = context.user_data[_DATA]
+    # update pode vir de message (portfolio) ou callback_query (pular via comando)
     chat_id = update.effective_user.id
 
     has_debt: bool = data.get("has_debt", False)
@@ -248,41 +303,62 @@ async def _finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 monthly_budget=data["monthly_budget"],
                 risk_profile=data["risk_profile"],
                 debt_amount=data.get("debt_amount"),
+                savings_amount=data.get("savings_amount"),
                 goal_name=data["goal_name"],
                 goal_value_monthly=data["goal_value_monthly"],
                 portfolio_tickers=portfolio_tickers,
             )
     except Exception:
         logger.exception("Failed to save onboarding for chat_id=%s", chat_id)
-        await update.message.reply_text(
-            "Ops, tive um problema ao salvar seus dados. Tenta de novo com /start."
-        )
+        msg = "Ops, tive um problema ao salvar seus dados. Tenta de novo com /start."
+        if update.message:
+            await update.message.reply_text(msg)
+        else:
+            await update.callback_query.message.reply_text(msg)
         return ConversationHandler.END
-
-    stage_messages = {
-        0: (
-            "Foco total em quitar a dívida! 💪\n"
-            "Toda semana te mando um resumo do seu progresso."
-        ),
-        1: (
-            "Hora de construir sua caixinha de investimentos! 🏦\n"
-            "Assim que você tiver R$ 1.000 acumulados, a gente parte para os FIIs."
-        ),
-        2: (
-            "Você já tem FIIs — ótimo! 📈\n"
-            "Vou te mandar análise semanal da sua carteira."
-        ),
-    }
 
     goal_name = data["goal_name"]
     goal_value = data["goal_value_monthly"]
 
-    await update.message.reply_text(
-        f"Tudo certo! Sua jornada financeira começa agora.\n\n"
-        f"Meta: {goal_name} (R$ {goal_value:.2f}/mês)\n\n"
-        f"{stage_messages[stage]}",
-        reply_markup=ReplyKeyboardRemove(),
+    stage_messages = {
+        0: (
+            "🎯 *Próximo passo:* toda semana te mando um resumo do progresso.\n"
+            "Quando quitar tudo, manda /atualizar 0 e você avança para a caixinha!"
+        ),
+        1: (
+            "🏦 *Próximo passo:* guarda na caixinha do Nubank ou Mercado Pago (100% CDI).\n"
+            "Quando tiver R$ 1.000 guardados, me avisa e a gente parte para os FIIs!"
+        ),
+        2: (
+            "📈 *Próximo passo:* toda semana você recebe análise da sua carteira.\n"
+            "Quando receber dividendos, me conta com /dividendo TICKER VALOR."
+        ),
+    }
+
+    commands_text = (
+        "\n\n*Comandos disponíveis:*\n"
+        "/atualizar — atualiza seu saldo de dívida (stage 0)\n"
+        "/ajuda — mostra todos os comandos"
     )
+
+    reply_text = (
+        f"✅ Tudo certo! Sua jornada financeira começa agora.\n\n"
+        f"Meta: *{goal_name}* (R$ {goal_value:.2f}/mês)\n\n"
+        f"{stage_messages[stage]}"
+        f"{commands_text}"
+    )
+
+    if update.message:
+        await update.message.reply_text(
+            reply_text,
+            parse_mode="Markdown",
+            reply_markup=ReplyKeyboardRemove(),
+        )
+    else:
+        await update.callback_query.message.reply_text(
+            reply_text,
+            parse_mode="Markdown",
+        )
 
     context.user_data.pop(_DATA, None)
     return ConversationHandler.END
@@ -298,18 +374,23 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 def build_onboarding_handler() -> ConversationHandler:
-    """Monta e retorna o ConversationHandler pronto para ser registrado na Application."""
     return ConversationHandler(
         entry_points=[CommandHandler("start", start)],
         states={
             ASK_DEBT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_debt),
+                CallbackQueryHandler(
+                    ask_debt,
+                    pattern=f"^({_CALLBACK_DEBT_SIM}|{_CALLBACK_DEBT_NAO})$",
+                ),
             ],
             ASK_DEBT_AMOUNT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_debt_amount),
             ],
             ASK_BUDGET: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_budget),
+            ],
+            ASK_SAVINGS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_savings),
             ],
             ASK_GOAL: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_goal),
@@ -318,7 +399,10 @@ def build_onboarding_handler() -> ConversationHandler:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_goal_value),
             ],
             ASK_PROFILE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_profile),
+                CallbackQueryHandler(
+                    ask_profile_callback,
+                    pattern=f"^({_CALLBACK_CONSERVADOR}|{_CALLBACK_MODERADO})$",
+                ),
             ],
             ASK_PORTFOLIO: [
                 CommandHandler("pular", ask_portfolio_skip),
