@@ -3,7 +3,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.models_user import User, UserDebt, UserGoal, UserPortfolio
+from app.domain.models_user import User, UserDebt, UserDividend, UserGoal, UserPortfolio
 
 
 class UserRepository:
@@ -35,6 +35,7 @@ class UserRepository:
         monthly_budget: Decimal,
         risk_profile: str,
         debt_amount: Decimal | None,
+        savings_amount: Decimal | None,
         goal_name: str,
         goal_value_monthly: Decimal,
         portfolio_tickers: list[str],
@@ -48,6 +49,7 @@ class UserRepository:
         user.stage = stage
         user.monthly_budget = monthly_budget
         user.risk_profile = risk_profile
+        user.savings_amount = savings_amount
         user.onboarding_complete = True
 
         if debt_amount is not None:
@@ -135,6 +137,25 @@ class UserRepository:
         user = result.scalar_one()
         user.stage_check_sent_at = datetime.now(timezone.utc).replace(tzinfo=None)
         await self._session.commit()
+
+    async def delete_user(self, chat_id: int) -> bool:
+        """Apaga o usuário e todos os dados relacionados. Retorna True se existia."""
+        from sqlalchemy import delete as sql_delete
+
+        result = await self._session.execute(
+            select(User).where(User.telegram_chat_id == chat_id)
+        )
+        user = result.scalar_one_or_none()
+        if user is None:
+            return False
+
+        for model in (UserDividend, UserPortfolio, UserDebt, UserGoal):
+            await self._session.execute(
+                sql_delete(model).where(model.user_id == user.id)
+            )
+        await self._session.delete(user)
+        await self._session.commit()
+        return True
 
     async def get_active_goal(self, user_id) -> UserGoal | None:
         result = await self._session.execute(
