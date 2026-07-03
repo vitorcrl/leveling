@@ -173,6 +173,47 @@ async def cmd_retomar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         logger.info("cmd_retomar: chat_id=%s resumed", chat_id)
 
 
+async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler de /ajuda — apresenta o Leveling e lista os comandos disponíveis."""
+    await update.message.reply_text(
+        "*Leveling* — sua jornada de independência financeira 🚀\n\n"
+        "O Leveling te acompanha desde o vermelho até os primeiros investimentos, "
+        "um passo de cada vez. Sem jargão, sem pressão.\n\n"
+        "*Estágios da jornada:*\n"
+        "0️⃣ Quitando dívidas — foco em zerar o que deve\n"
+        "1️⃣ Construindo caixinha — acumulando R$ 1.000 para o primeiro FII\n"
+        "2️⃣ Investindo em FIIs — renda passiva crescendo toda semana\n\n"
+        "*Comandos disponíveis:*\n"
+        "/start — inicia ou refaz o onboarding\n"
+        "/atualizar <valor> — atualiza o saldo da dívida (estágio 0)\n"
+        "/pausar — pausa os envios semanais\n"
+        "/retomar — retoma os envios semanais\n"
+        "/reset — apaga seu perfil e começa do zero\n"
+        "/ajuda — mostra esta mensagem",
+        parse_mode="Markdown",
+    )
+
+
+async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler de /reset — apaga o perfil completo e reinicia o onboarding."""
+    chat_id = update.effective_user.id
+
+    async with AsyncSessionFactory() as session:
+        repo = UserRepository(session)
+        deleted = await repo.delete_user(chat_id)
+
+    if deleted:
+        await update.message.reply_text(
+            "🗑️ Perfil apagado. Vamos começar do zero!\n\n"
+            "Manda /start para refazer o onboarding."
+        )
+        logger.info("cmd_reset: chat_id=%s deleted profile", chat_id)
+    else:
+        await update.message.reply_text(
+            "Não encontrei um perfil para apagar. Manda /start para começar."
+        )
+
+
 async def callback_stage_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Callback dos botões inline de promoção stage 1→2."""
     query = update.callback_query
@@ -213,5 +254,7 @@ def build_command_handlers() -> list:
         CommandHandler("atualizar", cmd_atualizar),
         CommandHandler("pausar", cmd_pausar),
         CommandHandler("retomar", cmd_retomar),
+        CommandHandler("ajuda", cmd_ajuda),
+        CommandHandler("reset", cmd_reset),
         CallbackQueryHandler(callback_stage_check, pattern=f"^({_CALLBACK_SIM}|{_CALLBACK_NAO})$"),
     ]
