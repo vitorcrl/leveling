@@ -12,7 +12,8 @@ Sem dependência de APScheduler ou Celery — asyncio puro com loop de 60s.
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram.ext import Application
 
@@ -26,13 +27,15 @@ from app.scheduler.weekly_runner import send_weekly_digest
 logger = logging.getLogger(__name__)
 
 _WEEKLY_DIGEST_WEEKDAY = 0   # segunda-feira
-_WEEKLY_DIGEST_HOUR = 8
+_WEEKLY_DIGEST_HOUR = 10     # horário de Brasília
 _FII_PIPELINE_WEEKDAY = 5    # sábado
-_FII_PIPELINE_HOUR = 10
+_FII_PIPELINE_HOUR = 10      # horário de Brasília
+
+_BRT = ZoneInfo("America/Sao_Paulo")
 
 
 def _should_run(weekday: int, hour: int, last_run: datetime | None) -> bool:
-    now = datetime.now(UTC)
+    now = datetime.now(_BRT)
     if now.weekday() != weekday or now.hour != hour:
         return False
     if last_run is None:
@@ -40,14 +43,14 @@ def _should_run(weekday: int, hour: int, last_run: datetime | None) -> bool:
     return (now - last_run).total_seconds() > 3600
 
 
-async def _scheduler_loop(bot: Bot) -> None:
+async def _scheduler_loop(bot) -> None:
     delivery = TelegramAdapter(bot)
     last_weekly: datetime | None = None
     last_fii: datetime | None = None
 
     while True:
         await asyncio.sleep(60)
-        now = datetime.now(UTC)
+        now = datetime.now(_BRT)
 
         if _should_run(_WEEKLY_DIGEST_WEEKDAY, _WEEKLY_DIGEST_HOUR, last_weekly):
             logger.info("scheduler: firing weekly digest")
@@ -61,7 +64,7 @@ async def _scheduler_loop(bot: Bot) -> None:
         if _should_run(_FII_PIPELINE_WEEKDAY, _FII_PIPELINE_HOUR, last_fii):
             logger.info("scheduler: firing FII pipeline")
             try:
-                result = await run_for_all_stage2_users()
+                result = await run_for_all_stage2_users(bot=bot)
                 logger.info("scheduler: FII pipeline done — %s", result)
                 last_fii = now
             except Exception:
