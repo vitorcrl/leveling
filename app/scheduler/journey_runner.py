@@ -17,10 +17,12 @@ from telegram import Bot
 from app.adapters.data.brapi_adapter import BrapiDataAdapter
 from app.adapters.delivery.telegram_adapter import TelegramAdapter
 from app.adapters.narrators.claude_haiku_narrator import ClaudeHaikuNarrator
+from app.adapters.narrators.template_narrator import TemplateNarrator
 from app.adapters.rules.asset_rule_set import AssetRuleSet
 from app.adapters.scoring.weighted_score_engine import WeightedScoreEngine
 from app.core.config import get_settings
 from app.domain.models_asset import AssetSnapshot
+from app.domain.ports import NarratorPort
 from app.pipeline.asset_pipeline import AssetPipeline
 from app.repositories.asset_repository import AssetRepository
 from app.repositories.user_repository import UserRepository
@@ -77,7 +79,11 @@ async def run_for_all_stage2_users(
 
     async def _run(bot: Bot) -> dict[str, int]:
         delivery = TelegramAdapter(bot)
-        narrator = ClaudeHaikuNarrator(api_key=settings.ANTHROPIC_API_KEY)
+        narrator: NarratorPort = (
+            ClaudeHaikuNarrator(api_key=settings.ANTHROPIC_API_KEY)
+            if settings.USE_AI_NARRATOR
+            else TemplateNarrator()
+        )
         pipeline = AssetPipeline(
             data=BrapiDataAdapter(base_url=settings.BRAPI_BASE_URL, token=settings.BRAPI_TOKEN),
             rules=AssetRuleSet(settings=settings),

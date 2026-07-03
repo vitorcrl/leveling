@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # --- Claude API ---
     ANTHROPIC_API_KEY: str = ""
     AI_RELEVANCE_MODEL: str = "claude-haiku-4-5-20251001"
+    # False = TemplateNarrator (zero custo, zero API) para o digest de FIIs de sábado.
+    # Liga para True quando quiser o texto redigido pela Claude — precisa de ANTHROPIC_API_KEY válida.
+    USE_AI_NARRATOR: bool = False
 
     # --- Telegram ---
     TELEGRAM_BOT_TOKEN: str = ""
