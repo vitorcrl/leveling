@@ -7,7 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.bot.commands import _parse_amount, cmd_atualizar, callback_stage_check
+from app.bot.commands import (
+    _parse_amount,
+    cmd_atualizar,
+    cmd_pausar,
+    cmd_retomar,
+    callback_stage_check,
+)
 
 
 def make_update(text: str = "", user_id: int = 42, args: list[str] | None = None) -> MagicMock:
@@ -24,11 +30,12 @@ def make_context(args: list[str] | None = None) -> MagicMock:
     return ctx
 
 
-def make_user(stage: int = 0, onboarding_complete: bool = True) -> MagicMock:
+def make_user(stage: int = 0, onboarding_complete: bool = True, paused: bool = False) -> MagicMock:
     user = MagicMock()
     user.id = "uuid-1"
     user.stage = stage
     user.onboarding_complete = onboarding_complete
+    user.paused = paused
     return user
 
 
@@ -173,6 +180,110 @@ class TestCmdAtualizar:
         with patch("app.core.database.AsyncSessionFactory", mock_factory):
             with patch("app.bot.commands.UserRepository", return_value=mock_repo):
                 await cmd_atualizar(update, ctx)
+
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/start" in msg
+
+
+# ---------------------------------------------------------------------------
+# cmd_pausar / cmd_retomar
+# ---------------------------------------------------------------------------
+
+class TestCmdPausar:
+    def _patch(self, user):
+        mock_factory = MagicMock()
+        mock_session = AsyncMock()
+        mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_repo = AsyncMock()
+        mock_repo.get_by_chat_id = AsyncMock(return_value=user)
+        mock_repo.set_paused = AsyncMock()
+        return mock_factory, mock_repo
+
+    async def test_pauses_active_user(self):
+        update = make_update()
+        ctx = make_context()
+        user = make_user(paused=False)
+        mock_factory, mock_repo = self._patch(user)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_pausar(update, ctx)
+
+        mock_repo.set_paused.assert_called_once_with(user.id, paused=True)
+        msg = update.message.reply_text.call_args.args[0]
+        assert "pausados" in msg.lower()
+
+    async def test_already_paused_is_noop(self):
+        update = make_update()
+        ctx = make_context()
+        user = make_user(paused=True)
+        mock_factory, mock_repo = self._patch(user)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_pausar(update, ctx)
+
+        mock_repo.set_paused.assert_not_called()
+
+    async def test_user_not_found_replies_with_start_hint(self):
+        update = make_update()
+        ctx = make_context()
+        mock_factory, mock_repo = self._patch(user=None)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_pausar(update, ctx)
+
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/start" in msg
+
+
+class TestCmdRetomar:
+    def _patch(self, user):
+        mock_factory = MagicMock()
+        mock_session = AsyncMock()
+        mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_repo = AsyncMock()
+        mock_repo.get_by_chat_id = AsyncMock(return_value=user)
+        mock_repo.set_paused = AsyncMock()
+        return mock_factory, mock_repo
+
+    async def test_resumes_paused_user(self):
+        update = make_update()
+        ctx = make_context()
+        user = make_user(paused=True)
+        mock_factory, mock_repo = self._patch(user)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_retomar(update, ctx)
+
+        mock_repo.set_paused.assert_called_once_with(user.id, paused=False)
+        msg = update.message.reply_text.call_args.args[0]
+        assert "retomados" in msg.lower()
+
+    async def test_already_active_is_noop(self):
+        update = make_update()
+        ctx = make_context()
+        user = make_user(paused=False)
+        mock_factory, mock_repo = self._patch(user)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_retomar(update, ctx)
+
+        mock_repo.set_paused.assert_not_called()
+
+    async def test_user_not_found_replies_with_start_hint(self):
+        update = make_update()
+        ctx = make_context()
+        mock_factory, mock_repo = self._patch(user=None)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_retomar(update, ctx)
 
         msg = update.message.reply_text.call_args.args[0]
         assert "/start" in msg

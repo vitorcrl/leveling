@@ -3,6 +3,8 @@ Handlers de comandos do bot pós-onboarding.
 
 /atualizar <valor>  — atualiza o saldo atual da dívida (stage 0)
                       se valor for 0, promove automaticamente para stage 1
+/pausar             — suspende o digest semanal proativo (controle explícito do usuário)
+/retomar            — reativa o digest semanal
 callback: stage_check_sim / stage_check_nao — resposta ao botão inline de promoção 1→2
 """
 
@@ -121,6 +123,56 @@ async def cmd_atualizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         )
 
 
+async def cmd_pausar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler de /pausar — suspende o digest semanal proativo."""
+    chat_id = update.effective_user.id
+
+    async with AsyncSessionFactory() as session:
+        repo = UserRepository(session)
+        user = await repo.get_by_chat_id(chat_id)
+
+        if user is None or not user.onboarding_complete:
+            await update.message.reply_text(
+                "Você ainda não completou o onboarding. Manda /start para começar."
+            )
+            return
+
+        if user.paused:
+            await update.message.reply_text("Seus envios já estão pausados. 👍")
+            return
+
+        await repo.set_paused(user.id, paused=True)
+        await update.message.reply_text(
+            "⏸️ Envios semanais pausados. Manda /retomar quando quiser voltar."
+        )
+        logger.info("cmd_pausar: chat_id=%s paused", chat_id)
+
+
+async def cmd_retomar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler de /retomar — reativa o digest semanal proativo."""
+    chat_id = update.effective_user.id
+
+    async with AsyncSessionFactory() as session:
+        repo = UserRepository(session)
+        user = await repo.get_by_chat_id(chat_id)
+
+        if user is None or not user.onboarding_complete:
+            await update.message.reply_text(
+                "Você ainda não completou o onboarding. Manda /start para começar."
+            )
+            return
+
+        if not user.paused:
+            await update.message.reply_text("Seus envios já estão ativos. 👍")
+            return
+
+        await repo.set_paused(user.id, paused=False)
+        await update.message.reply_text(
+            "▶️ Envios semanais retomados. Você volta a receber o digest toda segunda!"
+        )
+        logger.info("cmd_retomar: chat_id=%s resumed", chat_id)
+
+
 async def callback_stage_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Callback dos botões inline de promoção stage 1→2."""
     query = update.callback_query
@@ -159,5 +211,7 @@ async def callback_stage_check(update: Update, context: ContextTypes.DEFAULT_TYP
 def build_command_handlers() -> list:
     return [
         CommandHandler("atualizar", cmd_atualizar),
+        CommandHandler("pausar", cmd_pausar),
+        CommandHandler("retomar", cmd_retomar),
         CallbackQueryHandler(callback_stage_check, pattern=f"^({_CALLBACK_SIM}|{_CALLBACK_NAO})$"),
     ]

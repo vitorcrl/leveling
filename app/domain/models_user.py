@@ -33,6 +33,10 @@ class User(Base):
     last_interaction_at: atualizado a cada mensagem recebida do usuário,
         usado pela lógica de ausência (semana 2 → lembrete leve, semana 3+ → parar proativo).
     onboarding_complete: False até o ConversationHandler terminar todos os passos.
+    paused: controle explícito do usuário via /pausar e /retomar — o digest semanal
+        é enviado a todo usuário com onboarding completo e paused=False, independente
+        de última interação (decisão de produto de 2026-07-02: sem pausa automática
+        por ausência).
     """
 
     __tablename__ = "users"
@@ -43,6 +47,7 @@ class User(Base):
     monthly_budget = Column(Numeric(10, 2), nullable=True)
     risk_profile = Column(String(20), nullable=True)        # 'conservador' | 'moderado'
     onboarding_complete = Column(Boolean, nullable=False, default=False)
+    paused = Column(Boolean, nullable=False, default=False)
     last_interaction_at = Column(DateTime, nullable=True)
     stage_check_sent_at = Column(DateTime, nullable=True)  # última vez que perguntamos sobre promoção de stage
     created_at = Column(DateTime, default=_utc_now, nullable=False)
