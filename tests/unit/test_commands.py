@@ -15,6 +15,7 @@ from app.bot.commands import (
     ask_atualizar_valor,
     cmd_atualizar,
     cmd_pausar,
+    cmd_reserva,
     cmd_retomar,
     cmd_unknown_message,
     callback_stage_check,
@@ -37,12 +38,18 @@ def make_context(args: list[str] | None = None) -> MagicMock:
     return ctx
 
 
-def make_user(stage: int = 0, onboarding_complete: bool = True, paused: bool = False) -> MagicMock:
+def make_user(
+    stage: int = 0,
+    onboarding_complete: bool = True,
+    paused: bool = False,
+    monthly_essential_expense: Decimal | None = None,
+) -> MagicMock:
     user = MagicMock()
     user.id = "uuid-1"
     user.stage = stage
     user.onboarding_complete = onboarding_complete
     user.paused = paused
+    user.monthly_essential_expense = monthly_essential_expense
     return user
 
 
@@ -52,6 +59,14 @@ def make_debt(initial: str = "5000", current: str = "3000") -> MagicMock:
     debt.initial_amount = Decimal(initial)
     debt.current_amount = Decimal(current)
     return debt
+
+
+def make_fund(current: str = "1000", target: str = "6000") -> MagicMock:
+    fund = MagicMock()
+    fund.id = "fund-uuid-1"
+    fund.current_amount = Decimal(current)
+    fund.target_amount = Decimal(target)
+    return fund
 
 
 def make_callback_update(data: str, user_id: int = 42) -> MagicMock:
@@ -116,7 +131,19 @@ class TestCmdAtualizar:
         callbacks = {btn.callback_data for row in keyboard.inline_keyboard for btn in row}
         assert callbacks == {_CALLBACK_ATUALIZAR_DIVIDA, _CALLBACK_ATUALIZAR_SAVINGS}
 
-    async def test_stage1_shows_type_buttons(self):
+    async def test_stage2_shows_type_buttons(self):
+        update = make_update()
+        ctx = make_context()
+        user = make_user(stage=2)
+        mock_factory, mock_repo = self._patch(user)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                result = await cmd_atualizar(update, ctx)
+
+        assert result == 0  # ASK_ATUALIZAR_TIPO
+
+    async def test_stage1_blocks_with_message(self):
         update = make_update()
         ctx = make_context()
         user = make_user(stage=1)
@@ -126,12 +153,14 @@ class TestCmdAtualizar:
             with patch("app.bot.commands.UserRepository", return_value=mock_repo):
                 result = await cmd_atualizar(update, ctx)
 
-        assert result == 0  # ASK_ATUALIZAR_TIPO
+        assert result == ConversationHandler.END
+        msg = update.message.reply_text.call_args.args[0]
+        assert "Estágio 0.5" in msg
 
-    async def test_stage2_blocks_with_message(self):
+    async def test_stage3_blocks_with_message(self):
         update = make_update()
         ctx = make_context()
-        user = make_user(stage=2)
+        user = make_user(stage=3)
         mock_factory, mock_repo = self._patch(user)
 
         with patch("app.core.database.AsyncSessionFactory", mock_factory):
@@ -186,7 +215,7 @@ class TestAskAtualizarTipo:
         update = make_callback_update(_CALLBACK_ATUALIZAR_DIVIDA)
         ctx = make_context()
         ctx.user_data = {}
-        user = make_user(stage=1)
+        user = make_user(stage=2)
         mock_factory, mock_repo = self._patch(user)
 
         with patch("app.core.database.AsyncSessionFactory", mock_factory):
@@ -195,11 +224,11 @@ class TestAskAtualizarTipo:
 
         assert result == ConversationHandler.END
 
-    async def test_savings_stage1_asks_amount(self):
+    async def test_savings_stage2_asks_amount(self):
         update = make_callback_update(_CALLBACK_ATUALIZAR_SAVINGS)
         ctx = make_context()
         ctx.user_data = {}
-        user = make_user(stage=1)
+        user = make_user(stage=2)
         mock_factory, mock_repo = self._patch(user)
 
         with patch("app.core.database.AsyncSessionFactory", mock_factory):
@@ -236,6 +265,7 @@ class TestAskAtualizarValor:
         mock_repo.add_debt_payment = AsyncMock(return_value=debt)
         mock_repo.add_savings = AsyncMock(return_value=user)
         mock_repo.promote_stage = AsyncMock()
+        mock_repo.promote_to_emergency_fund = AsyncMock()
         return mock_factory, mock_repo
 
     async def test_invalid_value_stays_on_state(self):
@@ -264,11 +294,11 @@ class TestAskAtualizarValor:
         assert "2.800,00" in msg
         assert "atualizar_tipo" not in ctx.user_data
 
-    async def test_divida_fully_paid_promotes_to_stage1(self):
+    async def test_divida_fully_paid_without_essential_expense_promotes_to_stage2(self):
         update = make_update("2800")
         ctx = make_context()
         ctx.user_data = {"atualizar_tipo": "divida"}
-        user = make_user(stage=0)
+        user = make_user(stage=0, monthly_essential_expense=None)
         debt = make_debt(initial="5000", current="0")
         mock_factory, mock_repo = self._patch(user, debt=debt)
 
@@ -277,9 +307,28 @@ class TestAskAtualizarValor:
                 result = await ask_atualizar_valor(update, ctx)
 
         assert result == ConversationHandler.END
-        mock_repo.promote_stage.assert_called_once_with(user.id, new_stage=1)
+        mock_repo.promote_stage.assert_called_once_with(user.id, new_stage=2)
+        mock_repo.promote_to_emergency_fund.assert_not_called()
         msg = update.message.reply_text.call_args.args[0]
         assert "Estágio 1" in msg
+
+    async def test_divida_fully_paid_with_essential_expense_promotes_to_stage1(self):
+        update = make_update("2800")
+        ctx = make_context()
+        ctx.user_data = {"atualizar_tipo": "divida"}
+        user = make_user(stage=0, monthly_essential_expense=Decimal("1000"))
+        debt = make_debt(initial="5000", current="0")
+        mock_factory, mock_repo = self._patch(user, debt=debt)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                result = await ask_atualizar_valor(update, ctx)
+
+        assert result == ConversationHandler.END
+        mock_repo.promote_to_emergency_fund.assert_called_once_with(user.id, Decimal("5000"))
+        mock_repo.promote_stage.assert_not_called()
+        msg = update.message.reply_text.call_args.args[0]
+        assert "Estágio 0.5" in msg
 
     async def test_divida_no_active_debt_ends(self):
         update = make_update("200")
@@ -300,7 +349,7 @@ class TestAskAtualizarValor:
         update = make_update("100")
         ctx = make_context()
         ctx.user_data = {"atualizar_tipo": "savings"}
-        user = make_user(stage=1)
+        user = make_user(stage=2)
         user.savings_amount = Decimal("300")
         mock_factory, mock_repo = self._patch(user)
 
@@ -455,22 +504,22 @@ class TestCallbackStageCheck:
         mock_repo.promote_stage = AsyncMock()
         return mock_factory, mock_repo
 
-    async def test_sim_promotes_to_stage2(self):
+    async def test_sim_promotes_to_stage3(self):
         update = self.make_callback_update("stage_check_sim")
-        user = make_user(stage=1)
+        user = make_user(stage=2)
         mock_factory, mock_repo = self._patch(user)
 
         with patch("app.core.database.AsyncSessionFactory", mock_factory):
             with patch("app.bot.commands.UserRepository", return_value=mock_repo):
                 await callback_stage_check(update, MagicMock())
 
-        mock_repo.promote_stage.assert_called_once_with(user.id, new_stage=2)
+        mock_repo.promote_stage.assert_called_once_with(user.id, new_stage=3)
         msg = update.callback_query.edit_message_text.call_args.args[0]
         assert "Estágio 2" in msg
 
-    async def test_nao_keeps_stage1_and_replies(self):
+    async def test_nao_keeps_stage2_and_replies(self):
         update = self.make_callback_update("stage_check_nao")
-        user = make_user(stage=1)
+        user = make_user(stage=2)
         mock_factory, mock_repo = self._patch(user)
 
         with patch("app.core.database.AsyncSessionFactory", mock_factory):
@@ -483,7 +532,7 @@ class TestCallbackStageCheck:
 
     async def test_wrong_stage_ignores_callback(self):
         update = self.make_callback_update("stage_check_sim")
-        user = make_user(stage=0)  # já deveria estar em stage 0, não 1
+        user = make_user(stage=0)  # já deveria estar em stage 2, não 0
         mock_factory, mock_repo = self._patch(user)
 
         with patch("app.core.database.AsyncSessionFactory", mock_factory):
@@ -491,6 +540,111 @@ class TestCallbackStageCheck:
                 await callback_stage_check(update, MagicMock())
 
         mock_repo.promote_stage.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# cmd_reserva
+# ---------------------------------------------------------------------------
+
+class TestCmdReserva:
+    def _patch(self, user, fund=None):
+        mock_factory = MagicMock()
+        mock_session = AsyncMock()
+        mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_repo = AsyncMock()
+        mock_repo.get_by_chat_id = AsyncMock(return_value=user)
+        mock_repo.add_emergency_fund_savings = AsyncMock(return_value=fund)
+        mock_repo.complete_emergency_fund = AsyncMock()
+        mock_repo.promote_stage = AsyncMock()
+        return mock_factory, mock_repo
+
+    async def test_no_args_asks_for_value(self):
+        update = make_update()
+        ctx = make_context(args=[])
+        await cmd_reserva(update, ctx)
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/reserva" in msg
+
+    async def test_invalid_value_asks_for_value(self):
+        update = make_update()
+        ctx = make_context(args=["abc"])
+        await cmd_reserva(update, ctx)
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/reserva" in msg
+
+    async def test_wrong_stage_blocks_with_message(self):
+        update = make_update()
+        ctx = make_context(args=["200"])
+        user = make_user(stage=2)
+        mock_factory, mock_repo = self._patch(user)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_reserva(update, ctx)
+
+        msg = update.message.reply_text.call_args.args[0]
+        assert "Estágio 0.5" in msg
+        mock_repo.add_emergency_fund_savings.assert_not_called()
+
+    async def test_user_not_found_replies_with_start_hint(self):
+        update = make_update()
+        ctx = make_context(args=["200"])
+        mock_factory, mock_repo = self._patch(user=None)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_reserva(update, ctx)
+
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/start" in msg
+
+    async def test_no_active_fund_shows_error(self):
+        update = make_update()
+        ctx = make_context(args=["200"])
+        user = make_user(stage=1)
+        mock_factory, mock_repo = self._patch(user, fund=None)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_reserva(update, ctx)
+
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/start" in msg
+
+    async def test_partial_update_shows_progress(self):
+        update = make_update()
+        ctx = make_context(args=["1000"])
+        user = make_user(stage=1)
+        fund = make_fund(current="1000", target="6000")
+        mock_factory, mock_repo = self._patch(user, fund=fund)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_reserva(update, ctx)
+
+        mock_repo.add_emergency_fund_savings.assert_called_once_with(user.id, Decimal("1000"))
+        mock_repo.complete_emergency_fund.assert_not_called()
+        mock_repo.promote_stage.assert_not_called()
+        msg = update.message.reply_text.call_args.args[0]
+        assert "1.000,00" in msg
+        assert "6.000,00" in msg
+
+    async def test_meeting_target_completes_and_promotes(self):
+        update = make_update()
+        ctx = make_context(args=["5000"])
+        user = make_user(stage=1)
+        fund = make_fund(current="6000", target="6000")
+        mock_factory, mock_repo = self._patch(user, fund=fund)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_reserva(update, ctx)
+
+        mock_repo.complete_emergency_fund.assert_called_once_with(fund.id)
+        mock_repo.promote_stage.assert_called_once_with(user.id, new_stage=2)
+        msg = update.message.reply_text.call_args.args[0]
+        assert "Reserva completa" in msg
 
 
 # ---------------------------------------------------------------------------

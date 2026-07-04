@@ -14,6 +14,7 @@ from app.scheduler.weekly_runner import (
     _build_stage0_message,
     _build_stage1_message,
     _build_stage2_message,
+    _build_stage3_message,
     _debt_celebration_milestone,
     _fmt,
     _should_send_stage_check,
@@ -30,6 +31,14 @@ def make_user(stage: int = 0, budget: str = "500", stage_check_sent_at=None) -> 
     user.risk_profile = "conservador"
     user.stage_check_sent_at = stage_check_sent_at
     return user
+
+
+def make_fund(current: str = "1000", target: str = "6000") -> MagicMock:
+    fund = MagicMock()
+    fund.id = "fund-uuid-1"
+    fund.current_amount = Decimal(current)
+    fund.target_amount = Decimal(target)
+    return fund
 
 
 def make_debt(
@@ -134,47 +143,67 @@ class TestDebtCelebrationMilestone:
 
 class TestBuildStage1Message:
     def test_contains_stage_label(self):
-        msg = _build_stage1_message(make_user(1), make_goal())
-        assert "Estágio 1" in msg
+        msg = _build_stage1_message(make_user(1), make_fund(), make_goal())
+        assert "Estágio 0.5" in msg
 
-    def test_shows_months_to_target(self):
-        # R$500/mês → 2 meses para R$1.000
-        msg = _build_stage1_message(make_user(1, budget="500"), None)
-        assert "2" in msg
+    def test_shows_progress_with_fund(self):
+        msg = _build_stage1_message(make_user(1), make_fund("1000", "6000"), None)
+        assert "1.000" in msg
+        assert "6.000" in msg
+        assert "16,7%" in msg
 
-    def test_zero_budget_no_crash(self):
-        user = make_user(1)
-        user.monthly_budget = Decimal("0")
-        msg = _build_stage1_message(user, None)
-        assert "Estágio 1" in msg
+    def test_no_fund_shows_update_prompt(self):
+        msg = _build_stage1_message(make_user(1), None, None)
+        assert "/reserva" in msg
 
     def test_shows_goal(self):
-        msg = _build_stage1_message(make_user(1), make_goal("Viagem"))
+        msg = _build_stage1_message(make_user(1), make_fund(), make_goal("Viagem"))
         assert "Viagem" in msg
 
 
 class TestBuildStage2Message:
     def test_contains_stage_label(self):
         msg = _build_stage2_message(make_user(2), make_goal())
+        assert "Estágio 1" in msg
+
+    def test_shows_months_to_target(self):
+        # R$500/mês → 2 meses para R$1.000
+        msg = _build_stage2_message(make_user(2, budget="500"), None)
+        assert "2" in msg
+
+    def test_zero_budget_no_crash(self):
+        user = make_user(2)
+        user.monthly_budget = Decimal("0")
+        msg = _build_stage2_message(user, None)
+        assert "Estágio 1" in msg
+
+    def test_shows_goal(self):
+        msg = _build_stage2_message(make_user(2), make_goal("Viagem"))
+        assert "Viagem" in msg
+
+
+class TestBuildStage3Message:
+    def test_contains_stage_label(self):
+        msg = _build_stage3_message(make_user(3), make_goal())
         assert "Estágio 2" in msg
 
     def test_shows_profile(self):
-        msg = _build_stage2_message(make_user(2), None)
+        msg = _build_stage3_message(make_user(3), None)
         assert "conservador" in msg
 
     def test_shows_goal(self):
-        msg = _build_stage2_message(make_user(2), make_goal("Monster"))
+        msg = _build_stage3_message(make_user(3), make_goal("Monster"))
         assert "Monster" in msg
 
     def test_shows_fii_suggestions(self):
-        msg = _build_stage2_message(make_user(2), None)
+        msg = _build_stage3_message(make_user(3), None)
         assert "Sugestões da semana" in msg
         assert "11" in msg  # todo ticker de FII termina com 11
 
     def test_suggestions_respect_profile(self):
-        user = make_user(2)
+        user = make_user(3)
         user.risk_profile = "arrojado"
-        msg = _build_stage2_message(user, None)
+        msg = _build_stage3_message(user, None)
         assert "Sugestões da semana" in msg
 
 
@@ -189,9 +218,10 @@ class TestSendWeeklyDigest:
         return delivery
 
     async def test_sends_to_all_active_users(self):
-        users = [make_user(0), make_user(1), make_user(2)]
+        users = [make_user(0), make_user(1), make_user(2), make_user(3)]
         users[1].telegram_chat_id = 111
         users[2].telegram_chat_id = 222
+        users[3].telegram_chat_id = 333
 
         with patch("app.core.database.AsyncSessionFactory") as mock_factory:
             mock_session = AsyncMock()
@@ -202,14 +232,15 @@ class TestSendWeeklyDigest:
             mock_repo.get_all_active = AsyncMock(return_value=users)
             mock_repo.get_active_debt = AsyncMock(return_value=make_debt())
             mock_repo.get_active_goal = AsyncMock(return_value=make_goal())
+            mock_repo.get_active_emergency_fund = AsyncMock(return_value=make_fund())
 
             with patch("app.scheduler.weekly_runner.UserRepository", return_value=mock_repo):
                 delivery = self._make_delivery()
                 result = await send_weekly_digest(delivery)
 
-        assert result["sent"] == 3
+        assert result["sent"] == 4
         assert result["errors"] == 0
-        assert delivery.send.call_count == 3
+        assert delivery.send.call_count == 4
 
     async def test_counts_errors_without_raising(self):
         users = [make_user(0), make_user(1)]
@@ -224,6 +255,7 @@ class TestSendWeeklyDigest:
             mock_repo.get_all_active = AsyncMock(return_value=users)
             mock_repo.get_active_debt = AsyncMock(return_value=None)
             mock_repo.get_active_goal = AsyncMock(return_value=None)
+            mock_repo.get_active_emergency_fund = AsyncMock(return_value=None)
 
             delivery = self._make_delivery()
             delivery.send = AsyncMock(side_effect=[None, Exception("Telegram error")])
@@ -375,10 +407,10 @@ class TestShouldSendStageCheck:
 
 
 # ---------------------------------------------------------------------------
-# send_weekly_digest com bot (pergunta stage 1→2)
+# send_weekly_digest com bot (pergunta stage 2→3)
 # ---------------------------------------------------------------------------
 
-class TestStage1CheckInDigest:
+class TestStage2CheckInDigest:
     def _patch_session(self, users, debt=None, goal=None):
         mock_factory = MagicMock()
         mock_session = AsyncMock()
@@ -391,8 +423,8 @@ class TestStage1CheckInDigest:
         mock_repo.mark_stage_check_sent = AsyncMock()
         return mock_factory, mock_repo
 
-    async def test_stage1_user_receives_check_when_bot_provided(self):
-        user = make_user(stage=1, stage_check_sent_at=None)
+    async def test_stage2_user_receives_check_when_bot_provided(self):
+        user = make_user(stage=2, stage_check_sent_at=None)
         mock_factory, mock_repo = self._patch_session([user])
 
         mock_bot = AsyncMock()
@@ -410,9 +442,9 @@ class TestStage1CheckInDigest:
         assert "1.000" in call_kwargs["text"]
         mock_repo.mark_stage_check_sent.assert_called_once_with(user.id)
 
-    async def test_stage1_user_no_check_when_sent_recently(self):
+    async def test_stage2_user_no_check_when_sent_recently(self):
         recent = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=2)
-        user = make_user(stage=1, stage_check_sent_at=recent)
+        user = make_user(stage=2, stage_check_sent_at=recent)
         mock_factory, mock_repo = self._patch_session([user])
 
         mock_bot = AsyncMock()
@@ -427,7 +459,7 @@ class TestStage1CheckInDigest:
         mock_repo.mark_stage_check_sent.assert_not_called()
 
     async def test_no_bot_no_check_sent(self):
-        user = make_user(stage=1, stage_check_sent_at=None)
+        user = make_user(stage=2, stage_check_sent_at=None)
         mock_factory, mock_repo = self._patch_session([user])
 
         delivery = MagicMock()
