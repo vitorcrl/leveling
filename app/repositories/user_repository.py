@@ -1,9 +1,17 @@
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.models_user import User, UserDebt, UserDividend, UserGoal, UserPortfolio
+from app.domain.models_user import (
+    User,
+    UserDebt,
+    UserDividend,
+    UserEmergencyFund,
+    UserGoal,
+    UserPortfolio,
+)
 
 
 class UserRepository:
@@ -39,6 +47,7 @@ class UserRepository:
         goal_name: str,
         goal_value_monthly: Decimal,
         portfolio_tickers: list[str],
+        monthly_essential_expense: Decimal | None = None,
     ) -> User:
         """
         Persiste todos os dados do onboarding em uma única transação.
@@ -50,6 +59,7 @@ class UserRepository:
         user.monthly_budget = monthly_budget
         user.risk_profile = risk_profile
         user.savings_amount = savings_amount
+        user.monthly_essential_expense = monthly_essential_expense
         user.onboarding_complete = True
 
         if debt_amount is not None:
@@ -74,6 +84,14 @@ class UserRepository:
                 shares=0,
             )
             self._session.add(position)
+
+        if stage == 1 and monthly_essential_expense is not None:
+            emergency_fund = UserEmergencyFund(
+                user_id=user.id,
+                target_amount=monthly_essential_expense * 5,
+                current_amount=Decimal(0),
+            )
+            self._session.add(emergency_fund)
 
         await self._session.commit()
         return user
@@ -123,6 +141,54 @@ class UserRepository:
         await self._session.commit()
         return debt
 
+    async def get_active_emergency_fund(self, user_id) -> UserEmergencyFund | None:
+        result = await self._session.execute(
+            select(UserEmergencyFund)
+            .where(
+                UserEmergencyFund.user_id == user_id,
+                UserEmergencyFund.completed_at.is_(None),
+            )
+            .order_by(UserEmergencyFund.created_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def add_emergency_fund_savings(
+        self, user_id, amount: Decimal
+    ) -> UserEmergencyFund | None:
+        """Soma amount ao current_amount da reserva de emergência ativa. Retorna None se não há reserva ativa."""
+        fund = await self.get_active_emergency_fund(user_id)
+        if fund is None:
+            return None
+        fund.current_amount = fund.current_amount + amount
+        await self._session.commit()
+        return fund
+
+    async def promote_to_emergency_fund(self, user_id, target_amount: Decimal) -> User:
+        """Promove o usuário para o Estágio 0.5 (reserva) e cria o UserEmergencyFund."""
+        result = await self._session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one()
+        user.stage = 1
+        user.stage_check_sent_at = None
+        self._session.add(
+            UserEmergencyFund(
+                user_id=user.id,
+                target_amount=target_amount,
+                current_amount=Decimal(0),
+            )
+        )
+        await self._session.commit()
+        return user
+
+    async def complete_emergency_fund(self, fund_id) -> None:
+        """Marca a reserva de emergência como concluída."""
+        result = await self._session.execute(
+            select(UserEmergencyFund).where(UserEmergencyFund.id == fund_id)
+        )
+        fund = result.scalar_one()
+        fund.completed_at = datetime.now(timezone.utc).replace(tzinfo=None)
+        await self._session.commit()
+
     async def add_savings(self, user_id, amount: Decimal) -> User:
         """Soma amount ao savings_amount do usuário (Estágio 1 — caixinha)."""
         result = await self._session.execute(select(User).where(User.id == user_id))
@@ -149,7 +215,6 @@ class UserRepository:
 
     async def mark_stage_check_sent(self, user_id) -> None:
         """Registra que a pergunta de promoção foi enviada agora."""
-        from datetime import datetime, timezone
         result = await self._session.execute(select(User).where(User.id == user_id))
         user = result.scalar_one()
         user.stage_check_sent_at = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -166,7 +231,7 @@ class UserRepository:
         if user is None:
             return False
 
-        for model in (UserDividend, UserPortfolio, UserDebt, UserGoal):
+        for model in (UserDividend, UserPortfolio, UserDebt, UserGoal, UserEmergencyFund):
             await self._session.execute(
                 sql_delete(model).where(model.user_id == user.id)
             )
