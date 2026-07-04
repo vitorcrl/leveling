@@ -5,6 +5,9 @@ Fluxo:
   /start
     → ASK_DEBT: tem dívida? (sim/não)
     → [sim] ASK_DEBT_AMOUNT: qual o valor?
+    → ASK_ESSENTIAL_EXPENSE: quanto gasta por mês com o essencial? (roda para todos,
+      inclusive quem tem dívida — o dado só vira reserva de emergência quando o
+      usuário não tem dívida ativa; "não sei" ou /pular seguem sem gravar valor)
     → ASK_BUDGET: qual o aporte mensal?
     → [sem dívida] ASK_SAVINGS: já tem algum dinheiro guardado?
     → ASK_GOAL: qual a sua meta?
@@ -16,9 +19,10 @@ Fluxo:
     → DONE: grava tudo, manda mensagem de boas-vindas + comandos disponíveis
 
 Stage calculado na hora do commit:
-  - Tem dívida         → 0
-  - Sem dívida, sem FII → 1
-  - Sem dívida, com FII → 2
+  - Tem dívida                                      → 0
+  - Sem dívida, informou gasto essencial            → 1 (reserva de emergência)
+  - Sem dívida, sem FII, sem gasto essencial         → 2 (caixinha rumo ao 1º FII)
+  - Sem dívida, com FII                              → 3 (investindo em FIIs)
 """
 
 import logging
@@ -49,6 +53,7 @@ logger = logging.getLogger(__name__)
 (
     ASK_DEBT,
     ASK_DEBT_AMOUNT,
+    ASK_ESSENTIAL_EXPENSE,
     ASK_BUDGET,
     ASK_SAVINGS,
     ASK_GOAL,
@@ -57,7 +62,12 @@ logger = logging.getLogger(__name__)
     ASK_HAS_PORTFOLIO,
     ASK_PORTFOLIO,
     ASK_KNOWS_FII,
-) = range(10)
+) = range(11)
+
+# tokens aceitos como "não sei" na pergunta de gasto essencial (case-insensitive)
+_DONT_KNOW_TOKENS = {"não sei", "nao sei", "não faço ideia", "nao faco ideia"}
+
+_CALCULADORA_URL = "https://investidorsardinha.r7.com/calculadoras/custos-fixos/"
 
 _DATA = "onboarding"
 
@@ -144,11 +154,10 @@ async def ask_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     else:
         context.user_data[_DATA]["has_debt"] = False
         await query.edit_message_text(
-            "Ótimo! Sem dívidas, você já está um passo à frente. 👏\n\n"
-            "Quanto você consegue guardar por mês?\n"
-            "Manda só o número. Ex: 500",
+            "Ótimo! Sem dívidas, você já está um passo à frente. 👏"
         )
-        return ASK_BUDGET
+        await _send_ask_essential_expense(query.message.reply_text)
+        return ASK_ESSENTIAL_EXPENSE
 
 
 async def ask_debt_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -160,11 +169,58 @@ async def ask_debt_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ASK_DEBT_AMOUNT
 
     context.user_data[_DATA]["debt_amount"] = amount
-    await update.message.reply_text(
-        "Entendido. Vamos focar em quitar isso! 💪\n\n"
-        "Quanto você consegue separar por mês para pagar a dívida?\n"
-        "Manda só o número. Ex: 500"
+    await update.message.reply_text("Entendido. Vamos focar em quitar isso! 💪")
+    await _send_ask_essential_expense(update.message.reply_text)
+    return ASK_ESSENTIAL_EXPENSE
+
+
+async def _send_ask_essential_expense(reply) -> None:
+    await reply(
+        "Quanto você gasta por mês com o essencial — aluguel, contas, mercado?\n"
+        "Fica só entre a gente, ninguém mais vê isso 🔒\n\n"
+        "Se não souber, manda 'não sei' que eu te ajudo. Ou /pular se preferir "
+        "seguir sem essa parte por enquanto."
     )
+
+
+async def ask_essential_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip().lower()
+
+    if text in _DONT_KNOW_TOKENS:
+        await update.message.reply_text(
+            "Sem problema! Essa calculadora te ajuda a somar isso rapidinho:\n"
+            f"{_CALCULADORA_URL}\n\n"
+            "Quando tiver o número, é só me mandar (mensagem livre, a qualquer "
+            "momento). Bora continuar!"
+        )
+        return await _after_essential_expense(update, context)
+
+    amount = _parse_amount(update.message.text)
+    if amount is None:
+        await update.message.reply_text(
+            "Não entendi. Manda só o número (ex: 1500), 'não sei' ou /pular."
+        )
+        return ASK_ESSENTIAL_EXPENSE
+
+    context.user_data[_DATA]["monthly_essential_expense"] = amount
+    return await _after_essential_expense(update, context)
+
+
+async def ask_essential_expense_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    return await _after_essential_expense(update, context)
+
+
+async def _after_essential_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    if context.user_data[_DATA].get("has_debt"):
+        await update.message.reply_text(
+            "Quanto você consegue separar por mês para pagar a dívida?\n"
+            "Manda só o número. Ex: 500"
+        )
+    else:
+        await update.message.reply_text(
+            "Quanto você consegue guardar por mês?\n"
+            "Manda só o número. Ex: 500"
+        )
     return ASK_BUDGET
 
 
@@ -360,13 +416,16 @@ async def _finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     has_debt: bool = data.get("has_debt", False)
     portfolio_tickers: list[str] = data.get("portfolio_tickers", [])
+    monthly_essential_expense = data.get("monthly_essential_expense")
 
     if has_debt:
         stage = 0
     elif portfolio_tickers:
-        stage = 2
+        stage = 3
+    elif monthly_essential_expense is not None:
+        stage = 1  # Estágio 0.5 — reserva de emergência
     else:
-        stage = 1
+        stage = 2  # caixinha rumo ao 1º FII (pulou a pergunta de gasto essencial)
 
     try:
         async with AsyncSessionFactory() as session:
@@ -381,6 +440,7 @@ async def _finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 goal_name=data["goal_name"],
                 goal_value_monthly=data["goal_value_monthly"],
                 portfolio_tickers=portfolio_tickers,
+                monthly_essential_expense=monthly_essential_expense,
             )
     except Exception:
         logger.exception("Failed to save onboarding for chat_id=%s", chat_id)
@@ -397,13 +457,19 @@ async def _finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE)
     stage_messages = {
         0: (
             "🎯 *Próximo passo:* toda semana te mando um resumo do progresso.\n"
-            "Quando quitar tudo, manda /atualizar 0 e você avança para a caixinha!"
+            "Quando quitar tudo, manda /atualizar e você avança para a próxima etapa!"
         ),
         1: (
+            "🛡️ *Próximo passo:* guarda na caixinha do Nubank ou Mercado Pago (100% CDI) — "
+            "esse é o seu colchão de segurança.\n"
+            "Manda /reserva <valor> sempre que guardar mais. Quando bater 5x seu gasto "
+            "essencial, a gente parte para o 1º FII!"
+        ),
+        2: (
             "🏦 *Próximo passo:* guarda na caixinha do Nubank ou Mercado Pago (100% CDI).\n"
             "Quando tiver R$ 1.000 guardados, me avisa e a gente parte para os FIIs!"
         ),
-        2: (
+        3: (
             "📈 *Próximo passo:* toda semana você recebe análise da sua carteira.\n"
             "Quando receber dividendos, me conta com /dividendo TICKER VALOR."
         ),
@@ -462,6 +528,10 @@ def build_onboarding_handler() -> ConversationHandler:
             ],
             ASK_DEBT_AMOUNT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_debt_amount),
+            ],
+            ASK_ESSENTIAL_EXPENSE: [
+                CommandHandler("pular", ask_essential_expense_skip),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_essential_expense),
             ],
             ASK_BUDGET: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_budget),
