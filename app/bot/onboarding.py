@@ -10,7 +10,9 @@ Fluxo:
     → ASK_GOAL: qual a sua meta?
     → ASK_GOAL_VALUE: quanto custa por mês?
     → ASK_PROFILE: perfil de risco (inline: conservador/moderado com explicação)
-    → ASK_PORTFOLIO: já tem FIIs? (lista de tickers ou /pular)
+    → ASK_HAS_PORTFOLIO: já tem FIIs? (sim/não via botões)
+    → [sim] ASK_PORTFOLIO: lista de tickers
+    → [não] ASK_KNOWS_FII: já conhece FIIs? (sim/não via botões — explica se não souber)
     → DONE: grava tudo, manda mensagem de boas-vindas + comandos disponíveis
 
 Stage calculado na hora do commit:
@@ -52,8 +54,10 @@ logger = logging.getLogger(__name__)
     ASK_GOAL,
     ASK_GOAL_VALUE,
     ASK_PROFILE,
+    ASK_HAS_PORTFOLIO,
     ASK_PORTFOLIO,
-) = range(8)
+    ASK_KNOWS_FII,
+) = range(10)
 
 _DATA = "onboarding"
 
@@ -61,6 +65,10 @@ _CALLBACK_DEBT_SIM = "onb_debt_sim"
 _CALLBACK_DEBT_NAO = "onb_debt_nao"
 _CALLBACK_CONSERVADOR = "profile_conservador"
 _CALLBACK_MODERADO = "profile_moderado"
+_CALLBACK_HAS_PORTFOLIO_SIM = "onb_portfolio_sim"
+_CALLBACK_HAS_PORTFOLIO_NAO = "onb_portfolio_nao"
+_CALLBACK_KNOWS_FII_SIM = "onb_knows_fii_sim"
+_CALLBACK_KNOWS_FII_NAO = "onb_knows_fii_nao"
 
 
 def _parse_amount(text: str) -> Decimal | None:
@@ -252,14 +260,57 @@ async def ask_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 
     context.user_data[_DATA]["risk_profile"] = profile
 
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Sim, tenho", callback_data=_CALLBACK_HAS_PORTFOLIO_SIM),
+        InlineKeyboardButton("🙅 Não tenho", callback_data=_CALLBACK_HAS_PORTFOLIO_NAO),
+    ]])
     await query.edit_message_text(
         f"Perfil definido: *{label}*\n\n"
-        "Você já tem algum FII na carteira?\n\n"
-        "Se sim, manda os tickers separados por espaço ou vírgula. Ex: MXRF11 KNCR11\n"
-        "Se não tem, manda /pular",
+        "Você já tem algum FII na carteira?",
         parse_mode="Markdown",
+        reply_markup=keyboard,
     )
-    return ASK_PORTFOLIO
+    return ASK_HAS_PORTFOLIO
+
+
+async def ask_has_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == _CALLBACK_HAS_PORTFOLIO_SIM:
+        await query.edit_message_text(
+            "Manda os tickers separados por espaço ou vírgula. Ex: MXRF11 KNCR11"
+        )
+        return ASK_PORTFOLIO
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Já conheço", callback_data=_CALLBACK_KNOWS_FII_SIM),
+        InlineKeyboardButton("❓ Não sei o que é", callback_data=_CALLBACK_KNOWS_FII_NAO),
+    ]])
+    await query.edit_message_text(
+        "Tudo bem! Você já sabe o que é um FII?",
+        reply_markup=keyboard,
+    )
+    return ASK_KNOWS_FII
+
+
+async def ask_knows_fii(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    context.user_data[_DATA]["portfolio_tickers"] = []
+
+    if query.data == _CALLBACK_KNOWS_FII_NAO:
+        await query.edit_message_text(
+            "🏠 *FII* (Fundo de Investimento Imobiliário) é um jeito de investir "
+            "em imóveis sem precisar comprar um imóvel inteiro.\n\n"
+            "Você compra cotas e recebe uma parte dos aluguéis e rendimentos "
+            "todo mês — direto na sua conta.\n\n"
+            "Bora continuar sua jornada! 🚀",
+            parse_mode="Markdown",
+        )
+
+    return await _finish_onboarding(update, context)
 
 
 async def ask_portfolio_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -404,9 +455,21 @@ def build_onboarding_handler() -> ConversationHandler:
                     pattern=f"^({_CALLBACK_CONSERVADOR}|{_CALLBACK_MODERADO})$",
                 ),
             ],
+            ASK_HAS_PORTFOLIO: [
+                CallbackQueryHandler(
+                    ask_has_portfolio,
+                    pattern=f"^({_CALLBACK_HAS_PORTFOLIO_SIM}|{_CALLBACK_HAS_PORTFOLIO_NAO})$",
+                ),
+            ],
             ASK_PORTFOLIO: [
                 CommandHandler("pular", ask_portfolio_skip),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_portfolio),
+            ],
+            ASK_KNOWS_FII: [
+                CallbackQueryHandler(
+                    ask_knows_fii,
+                    pattern=f"^({_CALLBACK_KNOWS_FII_SIM}|{_CALLBACK_KNOWS_FII_NAO})$",
+                ),
             ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],

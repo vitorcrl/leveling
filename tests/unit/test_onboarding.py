@@ -14,12 +14,18 @@ from app.bot.onboarding import (
     ASK_DEBT_AMOUNT,
     ASK_GOAL,
     ASK_GOAL_VALUE,
+    ASK_HAS_PORTFOLIO,
+    ASK_KNOWS_FII,
     ASK_PORTFOLIO,
     ASK_PROFILE,
     ASK_SAVINGS,
     _CALLBACK_CONSERVADOR,
     _CALLBACK_DEBT_NAO,
     _CALLBACK_DEBT_SIM,
+    _CALLBACK_HAS_PORTFOLIO_NAO,
+    _CALLBACK_HAS_PORTFOLIO_SIM,
+    _CALLBACK_KNOWS_FII_NAO,
+    _CALLBACK_KNOWS_FII_SIM,
     _CALLBACK_MODERADO,
     _DATA,
     _parse_amount,
@@ -29,6 +35,8 @@ from app.bot.onboarding import (
     ask_debt_amount,
     ask_goal,
     ask_goal_value,
+    ask_has_portfolio,
+    ask_knows_fii,
     ask_portfolio,
     ask_portfolio_skip,
     ask_profile_callback,
@@ -280,14 +288,14 @@ class TestAskProfileCallback:
         update = make_callback_update(_CALLBACK_CONSERVADOR)
         ctx = make_context()
         result = await ask_profile_callback(update, ctx)
-        assert result == ASK_PORTFOLIO
+        assert result == ASK_HAS_PORTFOLIO
         assert ctx.user_data[_DATA]["risk_profile"] == "conservador"
 
     async def test_moderado_stored_and_proceeds(self):
         update = make_callback_update(_CALLBACK_MODERADO)
         ctx = make_context()
         result = await ask_profile_callback(update, ctx)
-        assert result == ASK_PORTFOLIO
+        assert result == ASK_HAS_PORTFOLIO
         assert ctx.user_data[_DATA]["risk_profile"] == "moderado"
 
     async def test_edits_message_with_profile_confirmation(self):
@@ -297,6 +305,85 @@ class TestAskProfileCallback:
         update.callback_query.edit_message_text.assert_called_once()
         msg = update.callback_query.edit_message_text.call_args.args[0]
         assert "Conservador" in msg
+
+    async def test_shows_has_portfolio_buttons(self):
+        update = make_callback_update(_CALLBACK_CONSERVADOR)
+        ctx = make_context()
+        await ask_profile_callback(update, ctx)
+        call_kwargs = update.callback_query.edit_message_text.call_args.kwargs
+        keyboard = call_kwargs["reply_markup"]
+        callbacks = {btn.callback_data for row in keyboard.inline_keyboard for btn in row}
+        assert callbacks == {_CALLBACK_HAS_PORTFOLIO_SIM, _CALLBACK_HAS_PORTFOLIO_NAO}
+
+
+class TestAskHasPortfolio:
+    async def test_sim_asks_for_tickers(self):
+        update = make_callback_update(_CALLBACK_HAS_PORTFOLIO_SIM)
+        ctx = make_context()
+        result = await ask_has_portfolio(update, ctx)
+        assert result == ASK_PORTFOLIO
+        update.callback_query.edit_message_text.assert_called_once()
+
+    async def test_nao_shows_knows_fii_buttons(self):
+        update = make_callback_update(_CALLBACK_HAS_PORTFOLIO_NAO)
+        ctx = make_context()
+        result = await ask_has_portfolio(update, ctx)
+        assert result == ASK_KNOWS_FII
+        call_kwargs = update.callback_query.edit_message_text.call_args.kwargs
+        keyboard = call_kwargs["reply_markup"]
+        callbacks = {btn.callback_data for row in keyboard.inline_keyboard for btn in row}
+        assert callbacks == {_CALLBACK_KNOWS_FII_SIM, _CALLBACK_KNOWS_FII_NAO}
+
+
+class TestAskKnowsFii:
+    async def _finish_with(self, callback_data: str) -> tuple:
+        update = make_callback_update(callback_data)
+        update.callback_query.message.reply_text = AsyncMock()
+        ctx = make_context(_base_data())
+
+        with patch("app.core.database.AsyncSessionFactory") as mock_factory:
+            mock_session = AsyncMock()
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            mock_repo = AsyncMock()
+            mock_repo.save_onboarding = AsyncMock()
+
+            with patch("app.bot.onboarding.UserRepository", return_value=mock_repo):
+                result = await ask_knows_fii(update, ctx)
+
+        return update, result
+
+    async def test_sim_skips_explanation_and_finishes(self):
+        update, result = await self._finish_with(_CALLBACK_KNOWS_FII_SIM)
+        assert result == ConversationHandler.END
+        update.callback_query.edit_message_text.assert_not_called()
+
+    async def test_nao_shows_explanation_and_finishes(self):
+        update, result = await self._finish_with(_CALLBACK_KNOWS_FII_NAO)
+        assert result == ConversationHandler.END
+        update.callback_query.edit_message_text.assert_called_once()
+        msg = update.callback_query.edit_message_text.call_args.args[0]
+        assert "FII" in msg
+
+    async def test_sets_empty_portfolio(self):
+        update = make_callback_update(_CALLBACK_KNOWS_FII_SIM)
+        update.callback_query.message.reply_text = AsyncMock()
+        ctx = make_context(_base_data())
+
+        with patch("app.core.database.AsyncSessionFactory") as mock_factory:
+            mock_session = AsyncMock()
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            mock_repo = AsyncMock()
+            mock_repo.save_onboarding = AsyncMock()
+
+            with patch("app.bot.onboarding.UserRepository", return_value=mock_repo):
+                await ask_knows_fii(update, ctx)
+
+        call_kwargs = mock_repo.save_onboarding.call_args.kwargs
+        assert call_kwargs["portfolio_tickers"] == []
 
 
 # ---------------------------------------------------------------------------
