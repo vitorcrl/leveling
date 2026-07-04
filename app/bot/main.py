@@ -15,10 +15,10 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from telegram.ext import Application
+from telegram.ext import Application, MessageHandler, filters
 
 from app.adapters.delivery.telegram_adapter import TelegramAdapter
-from app.bot.commands import build_command_handlers
+from app.bot.commands import build_atualizar_handler, build_command_handlers, cmd_unknown_message
 from app.bot.onboarding import build_onboarding_handler
 from app.core.config import get_settings
 from app.scheduler.journey_runner import run_for_all_stage2_users
@@ -75,8 +75,11 @@ def build_application() -> Application:
     settings = get_settings()
     app = Application.builder().token(settings.TELEGRAM_BOT_TOKEN).build()
     app.add_handler(build_onboarding_handler())
+    app.add_handler(build_atualizar_handler())
     for handler in build_command_handlers():
         app.add_handler(handler)
+    # deve ser o último — captura qualquer texto fora de conversa ativa
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, cmd_unknown_message))
     return app
 
 
