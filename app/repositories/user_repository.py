@@ -114,6 +114,23 @@ class UserRepository:
         await self._session.commit()
         return debt
 
+    async def add_debt_payment(self, user_id, paid_amount: Decimal) -> UserDebt | None:
+        """Abate paid_amount do saldo da dívida ativa. Retorna None se não há dívida ativa."""
+        debt = await self.get_active_debt(user_id)
+        if debt is None:
+            return None
+        debt.current_amount = max(debt.current_amount - paid_amount, Decimal(0))
+        await self._session.commit()
+        return debt
+
+    async def add_savings(self, user_id, amount: Decimal) -> User:
+        """Soma amount ao savings_amount do usuário (Estágio 1 — caixinha)."""
+        result = await self._session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one()
+        user.savings_amount = (user.savings_amount or Decimal(0)) + amount
+        await self._session.commit()
+        return user
+
     async def mark_debt_celebrated(self, debt_id, milestone: Decimal) -> None:
         """Registra o último múltiplo de R$100 quitado já celebrado no digest."""
         result = await self._session.execute(select(UserDebt).where(UserDebt.id == debt_id))

@@ -98,7 +98,15 @@ def _parse_tickers(text: str) -> list[str]:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data[_DATA] = {}
 
-    await update.message.reply_text(
+    # Entry point duplo: /start manda update.message; o botão inline
+    # "Começar agora" (callback_unknown_start) manda update.callback_query.
+    if update.message is not None:
+        reply = update.message.reply_text
+    else:
+        await update.callback_query.answer()
+        reply = update.callback_query.message.reply_text
+
+    await reply(
         "*Bem-vindo ao Leveling!* 🚀\n\n"
         "Aqui você acompanha sua jornada financeira desde o vermelho até os primeiros investimentos.\n\n"
         "São só algumas perguntas rápidas para montar o seu perfil. Vamos lá?",
@@ -109,7 +117,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         InlineKeyboardButton("✅ Sim, tenho", callback_data=_CALLBACK_DEBT_SIM),
         InlineKeyboardButton("🙅 Não tenho", callback_data=_CALLBACK_DEBT_NAO),
     ]])
-    await update.message.reply_text(
+    await reply(
         "Você tem dívidas hoje?\n"
         "(cartão, cheque especial, empréstimo etc.)",
         reply_markup=keyboard,
@@ -318,6 +326,12 @@ async def ask_portfolio_skip(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return await _finish_onboarding(update, context)
 
 
+async def ask_portfolio_skip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.callback_query.answer()
+    context.user_data[_DATA]["portfolio_tickers"] = []
+    return await _finish_onboarding(update, context)
+
+
 async def ask_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     tickers = _parse_tickers(update.message.text)
     if not tickers:
@@ -426,7 +440,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 def build_onboarding_handler() -> ConversationHandler:
     return ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[
+            CommandHandler("start", start),
+            CallbackQueryHandler(start, pattern=f"^{CALLBACK_COMECAR_AGORA}$"),
+        ],
         states={
             ASK_DEBT: [
                 CallbackQueryHandler(
@@ -463,6 +480,10 @@ def build_onboarding_handler() -> ConversationHandler:
             ],
             ASK_PORTFOLIO: [
                 CommandHandler("pular", ask_portfolio_skip),
+                CallbackQueryHandler(
+                    ask_portfolio_skip_callback,
+                    pattern=f"^{_CALLBACK_PORTFOLIO_SKIP}$",
+                ),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_portfolio),
             ],
             ASK_KNOWS_FII: [

@@ -19,6 +19,7 @@ from app.bot.onboarding import (
     ASK_PORTFOLIO,
     ASK_PROFILE,
     ASK_SAVINGS,
+    CALLBACK_COMECAR_AGORA,
     _CALLBACK_CONSERVADOR,
     _CALLBACK_DEBT_NAO,
     _CALLBACK_DEBT_SIM,
@@ -27,6 +28,7 @@ from app.bot.onboarding import (
     _CALLBACK_KNOWS_FII_NAO,
     _CALLBACK_KNOWS_FII_SIM,
     _CALLBACK_MODERADO,
+    _CALLBACK_PORTFOLIO_SKIP,
     _DATA,
     _parse_amount,
     _parse_tickers,
@@ -39,12 +41,14 @@ from app.bot.onboarding import (
     ask_knows_fii,
     ask_portfolio,
     ask_portfolio_skip,
+    ask_portfolio_skip_callback,
     ask_profile_callback,
     ask_savings,
+    build_onboarding_handler,
     cancel,
     start,
 )
-from telegram.ext import ConversationHandler
+from telegram.ext import CallbackQueryHandler, ConversationHandler
 
 
 def make_update(text: str, user_id: int = 123456) -> MagicMock:
@@ -449,6 +453,28 @@ class TestAskPortfolio:
         assert call_kwargs["portfolio_tickers"] == []
         assert call_kwargs["stage"] == 1
 
+    async def test_skip_callback_sets_empty_portfolio(self):
+        update = make_callback_update(_CALLBACK_PORTFOLIO_SKIP)
+        update.callback_query.message.reply_text = AsyncMock()
+        ctx = make_context(_base_data())
+
+        with patch("app.core.database.AsyncSessionFactory") as mock_factory:
+            mock_session = AsyncMock()
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            mock_repo = AsyncMock()
+            mock_repo.save_onboarding = AsyncMock()
+
+            with patch("app.bot.onboarding.UserRepository", return_value=mock_repo):
+                result = await ask_portfolio_skip_callback(update, ctx)
+
+        assert result == ConversationHandler.END
+        update.callback_query.answer.assert_called_once()
+        call_kwargs = mock_repo.save_onboarding.call_args.kwargs
+        assert call_kwargs["portfolio_tickers"] == []
+        assert call_kwargs["stage"] == 1
+
 
 class TestStageCalculation:
     async def _finish_with(self, has_debt: bool, tickers: list[str]) -> int:
@@ -500,3 +526,34 @@ class TestCancel:
         result = await cancel(update, ctx)
         assert result == ConversationHandler.END
         assert _DATA not in ctx.user_data
+
+
+class TestBuildOnboardingHandlerEntryPoints:
+    def test_comecar_agora_callback_is_an_entry_point(self):
+        handler = build_onboarding_handler()
+        callback_entry_points = [
+            ep for ep in handler.entry_points if isinstance(ep, CallbackQueryHandler)
+        ]
+        assert len(callback_entry_points) == 1
+        assert callback_entry_points[0].pattern.match(CALLBACK_COMECAR_AGORA)
+
+    def test_start_command_is_still_an_entry_point(self):
+        handler = build_onboarding_handler()
+        command_entry_points = [
+            ep for ep in handler.entry_points if hasattr(ep, "commands")
+        ]
+        assert any("start" in ep.commands for ep in command_entry_points)
+
+
+class TestStartFromCallback:
+    async def test_callback_start_answers_and_sends_debt_question(self):
+        update = make_callback_update(CALLBACK_COMECAR_AGORA)
+        update.callback_query.message.reply_text = AsyncMock()
+        ctx = make_context()
+
+        result = await start(update, ctx)
+
+        assert result == ASK_DEBT
+        update.callback_query.answer.assert_called_once()
+        assert update.callback_query.message.reply_text.call_count == 2
+        assert ctx.user_data[_DATA] == {}
