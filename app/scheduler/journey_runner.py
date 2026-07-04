@@ -1,7 +1,7 @@
 """
-Runner do pipeline de FIIs para usuários no Estágio 2.
+Runner do pipeline de FIIs para usuários no Estágio 2 (investindo em FIIs).
 
-Busca todos os usuários com stage=2 e onboarding completo e envia
+Busca todos os usuários com stage=3 (interno) e onboarding completo e envia
 o digest semanal de FIIs para cada um usando a watchlist global.
 
 Invocado via: python -m app.scheduler.journey_runner
@@ -90,11 +90,11 @@ async def run_for_all_stage2_users(
 
         async with AsyncSessionFactory() as session:
             users = await UserRepository(session).get_all_active()
-            stage2_users = [u for u in users if u.stage == 2]
+            stage3_users = [u for u in users if u.stage == 3]
 
-            logger.info("journey_runner: %d stage-2 users found", len(stage2_users))
+            logger.info("journey_runner: %d stage-3 users found", len(stage3_users))
 
-            for user in stage2_users:
+            for user in stage3_users:
                 async with AsyncSessionFactory() as asset_session:
                     asset_repo = AssetRepository(asset_session)
                     try:
