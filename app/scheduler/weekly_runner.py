@@ -8,8 +8,9 @@ Invocado via: python -m app.scheduler.weekly_runner
 Geralmente chamado por cron toda segunda-feira às 8h.
 
 Stage 0 — quitando dívida: progresso no pagamento + motivação
-Stage 1 — acumulando caixinha: saldo acumulado + proximidade da meta de R$1k
-Stage 2 — investindo em FIIs: resumo da carteira + sugestão de aporte
+Stage 1 — reserva de emergência (Estágio 0.5): saldo acumulado + proximidade da meta (5x gasto essencial)
+Stage 2 — acumulando caixinha rumo ao 1º FII: saldo acumulado + proximidade da meta de R$1k
+Stage 3 — investindo em FIIs: resumo da carteira + sugestão de aporte
 """
 
 import asyncio
@@ -22,7 +23,7 @@ from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from app.adapters.delivery.telegram_adapter import TelegramAdapter
 from app.core.config import get_settings
 from app.domain.fii_catalog import suggest_fiis
-from app.domain.models_user import User, UserDebt, UserGoal
+from app.domain.models_user import User, UserDebt, UserEmergencyFund, UserGoal
 from app.domain.ports import DeliveryPort
 from app.repositories.user_repository import UserRepository
 
@@ -74,7 +75,24 @@ def _build_stage0_message(user: User, debt: UserDebt | None, goal: UserGoal | No
     return "\n".join(lines)
 
 
-def _build_stage1_message(user: User, goal: UserGoal | None) -> str:
+def _build_stage1_message(
+    user: User, fund: UserEmergencyFund | None, goal: UserGoal | None
+) -> str:
+    lines = ["*Semana de progresso — Estágio 0.5: Reserva de emergência* 🛡️"]
+    if fund is not None:
+        pct = (fund.current_amount / fund.target_amount * 100) if fund.target_amount else Decimal(0)
+        pct_str = f"{pct:.1f}".replace(".", ",")
+        lines.append(f"\nGuardado: {_fmt(fund.current_amount)} / {_fmt(fund.target_amount)}")
+        lines.append(f"Progresso: {pct_str}%")
+    else:
+        lines.append("\nAtualize sua reserva com /reserva <valor> para acompanhar o progresso.")
+    lines.append("\nEssa reserva é seu colchão de segurança antes do 1º FII. Continue guardando!")
+    if goal:
+        lines.append(f"\nSua meta: *{goal.name}* ({_fmt(goal.goal_value_monthly)}/mês)")
+    return "\n".join(lines)
+
+
+def _build_stage2_message(user: User, goal: UserGoal | None) -> str:
     budget = user.monthly_budget or Decimal(0)
     target = Decimal("1000")
     lines = ["*Semana de progresso — Estágio 1: Construindo a caixinha* 🏦"]
@@ -89,7 +107,7 @@ def _build_stage1_message(user: User, goal: UserGoal | None) -> str:
     return "\n".join(lines)
 
 
-def _build_stage2_message(user: User, goal: UserGoal | None) -> str:
+def _build_stage3_message(user: User, goal: UserGoal | None) -> str:
     lines = ["*Semana de progresso — Estágio 2: Investindo em FIIs* 📈"]
     lines.append(f"\nPerfil: {user.risk_profile or 'não informado'}")
     lines.append(f"Aporte mensal: {_fmt(user.monthly_budget)}")
@@ -118,7 +136,7 @@ def _should_send_stage_check(user: User) -> bool:
     return days_since >= _STAGE_CHECK_COOLDOWN_DAYS
 
 
-async def _send_stage1_check(bot: Bot, repo: UserRepository, user: User) -> None:
+async def _send_stage2_check(bot: Bot, repo: UserRepository, user: User) -> None:
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("Sim, já tenho! 🎉", callback_data="stage_check_sim"),
@@ -135,7 +153,7 @@ async def _send_stage1_check(bot: Bot, repo: UserRepository, user: User) -> None
         reply_markup=keyboard,
     )
     await repo.mark_stage_check_sent(user.id)
-    logger.info("weekly_runner: sent stage-1 check to chat_id=%s", user.telegram_chat_id)
+    logger.info("weekly_runner: sent stage-2 check to chat_id=%s", user.telegram_chat_id)
 
 
 async def send_weekly_digest(delivery: DeliveryPort, bot: Bot | None = None) -> dict[str, int]:
@@ -162,11 +180,14 @@ async def send_weekly_digest(delivery: DeliveryPort, bot: Bot | None = None) -> 
                         if milestone > (debt.last_celebrated_amount or Decimal(0)):
                             await repo.mark_debt_celebrated(debt.id, milestone)
                 elif user.stage == 1:
-                    message = _build_stage1_message(user, goal)
-                    if bot is not None and _should_send_stage_check(user):
-                        await _send_stage1_check(bot, repo, user)
+                    fund = await repo.get_active_emergency_fund(user.id)
+                    message = _build_stage1_message(user, fund, goal)
                 elif user.stage == 2:
                     message = _build_stage2_message(user, goal)
+                    if bot is not None and _should_send_stage_check(user):
+                        await _send_stage2_check(bot, repo, user)
+                elif user.stage == 3:
+                    message = _build_stage3_message(user, goal)
                 else:
                     logger.warning(
                         "weekly_runner: unknown stage=%d for chat_id=%s — skipping",

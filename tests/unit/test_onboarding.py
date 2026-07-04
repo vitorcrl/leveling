@@ -12,6 +12,7 @@ from app.bot.onboarding import (
     ASK_BUDGET,
     ASK_DEBT,
     ASK_DEBT_AMOUNT,
+    ASK_ESSENTIAL_EXPENSE,
     ASK_GOAL,
     ASK_GOAL_VALUE,
     ASK_HAS_PORTFOLIO,
@@ -35,6 +36,8 @@ from app.bot.onboarding import (
     ask_budget,
     ask_debt,
     ask_debt_amount,
+    ask_essential_expense,
+    ask_essential_expense_skip,
     ask_goal,
     ask_goal_value,
     ask_has_portfolio,
@@ -159,11 +162,12 @@ class TestAskDebt:
         assert result == ASK_DEBT_AMOUNT
         assert ctx.user_data[_DATA]["has_debt"] is True
 
-    async def test_nao_stores_has_debt_false_and_returns_ask_budget(self):
+    async def test_nao_stores_has_debt_false_and_returns_ask_essential_expense(self):
         update = make_callback_update(_CALLBACK_DEBT_NAO)
+        update.callback_query.message.reply_text = AsyncMock()
         ctx = make_context()
         result = await ask_debt(update, ctx)
-        assert result == ASK_BUDGET
+        assert result == ASK_ESSENTIAL_EXPENSE
         assert ctx.user_data[_DATA]["has_debt"] is False
 
     async def test_start_sends_inline_keyboard(self):
@@ -182,7 +186,7 @@ class TestAskDebtAmount:
         update = make_update("5000")
         ctx = make_context({"has_debt": True})
         result = await ask_debt_amount(update, ctx)
-        assert result == ASK_BUDGET
+        assert result == ASK_ESSENTIAL_EXPENSE
         assert ctx.user_data[_DATA]["debt_amount"] == Decimal("5000")
 
     async def test_invalid_amount_stays_on_same_state(self):
@@ -191,6 +195,61 @@ class TestAskDebtAmount:
         result = await ask_debt_amount(update, ctx)
         assert result == ASK_DEBT_AMOUNT
         assert "debt_amount" not in ctx.user_data[_DATA]
+
+
+class TestAskEssentialExpense:
+    async def test_valid_amount_stored_and_proceeds_to_budget(self):
+        update = make_update("1500")
+        ctx = make_context({"has_debt": False})
+        result = await ask_essential_expense(update, ctx)
+        assert result == ASK_BUDGET
+        assert ctx.user_data[_DATA]["monthly_essential_expense"] == Decimal("1500")
+
+    async def test_dont_know_skips_value_and_sends_calculator_link(self):
+        update = make_update("não sei")
+        ctx = make_context({"has_debt": False})
+        result = await ask_essential_expense(update, ctx)
+        assert result == ASK_BUDGET
+        assert "monthly_essential_expense" not in ctx.user_data[_DATA]
+        msg = update.message.reply_text.call_args_list[0].args[0]
+        assert "calculadora" in msg.lower()
+
+    async def test_dont_know_variant_nao_faco_ideia(self):
+        update = make_update("não faço ideia")
+        ctx = make_context({"has_debt": False})
+        result = await ask_essential_expense(update, ctx)
+        assert result == ASK_BUDGET
+        assert "monthly_essential_expense" not in ctx.user_data[_DATA]
+
+    async def test_invalid_text_stays_on_same_state(self):
+        update = make_update("sei la quanto")
+        ctx = make_context({"has_debt": False})
+        result = await ask_essential_expense(update, ctx)
+        assert result == ASK_ESSENTIAL_EXPENSE
+        assert "monthly_essential_expense" not in ctx.user_data[_DATA]
+
+    async def test_routes_to_debt_amount_question_when_has_debt(self):
+        update = make_update("1500")
+        ctx = make_context({"has_debt": True})
+        await ask_essential_expense(update, ctx)
+        msg = update.message.reply_text.call_args.args[0]
+        assert "dívida" in msg.lower()
+
+    async def test_routes_to_savings_question_when_no_debt(self):
+        update = make_update("1500")
+        ctx = make_context({"has_debt": False})
+        await ask_essential_expense(update, ctx)
+        msg = update.message.reply_text.call_args.args[0]
+        assert "guardar" in msg.lower()
+
+
+class TestAskEssentialExpenseSkip:
+    async def test_skip_proceeds_without_storing_value(self):
+        update = make_update("/pular")
+        ctx = make_context({"has_debt": False})
+        result = await ask_essential_expense_skip(update, ctx)
+        assert result == ASK_BUDGET
+        assert "monthly_essential_expense" not in ctx.user_data[_DATA]
 
 
 class TestAskBudget:
@@ -424,7 +483,7 @@ class TestAskPortfolio:
         assert result == ConversationHandler.END
         call_kwargs = mock_repo.save_onboarding.call_args.kwargs
         assert call_kwargs["portfolio_tickers"] == ["MXRF11", "KNCR11"]
-        assert call_kwargs["stage"] == 2
+        assert call_kwargs["stage"] == 3
         assert call_kwargs["savings_amount"] == Decimal("200")
 
     async def test_invalid_tickers_stays_on_same_state(self):
@@ -451,7 +510,7 @@ class TestAskPortfolio:
         assert result == ConversationHandler.END
         call_kwargs = mock_repo.save_onboarding.call_args.kwargs
         assert call_kwargs["portfolio_tickers"] == []
-        assert call_kwargs["stage"] == 1
+        assert call_kwargs["stage"] == 2
 
     async def test_skip_callback_sets_empty_portfolio(self):
         update = make_callback_update(_CALLBACK_PORTFOLIO_SKIP)
@@ -473,26 +532,32 @@ class TestAskPortfolio:
         update.callback_query.answer.assert_called_once()
         call_kwargs = mock_repo.save_onboarding.call_args.kwargs
         assert call_kwargs["portfolio_tickers"] == []
-        assert call_kwargs["stage"] == 1
+        assert call_kwargs["stage"] == 2
 
 
 class TestStageCalculation:
-    async def _finish_with(self, has_debt: bool, tickers: list[str]) -> int:
+    async def _finish_with(
+        self,
+        has_debt: bool,
+        tickers: list[str],
+        monthly_essential_expense: Decimal | None = None,
+    ) -> tuple[int, dict]:
         data = _base_data()
         data["has_debt"] = has_debt
         if has_debt:
             data["debt_amount"] = Decimal("3000")
             data.pop("savings_amount", None)
         data["portfolio_tickers"] = tickers
+        if monthly_essential_expense is not None:
+            data["monthly_essential_expense"] = monthly_essential_expense
 
         update = make_update("qualquer")
         ctx = make_context(data)
 
-        captured_stage = None
+        captured = {}
 
         async def capture(**kwargs):
-            nonlocal captured_stage
-            captured_stage = kwargs["stage"]
+            captured.update(kwargs)
 
         with patch("app.bot.onboarding.AsyncSessionFactory") as mock_factory:
             mock_session = AsyncMock()
@@ -504,19 +569,44 @@ class TestStageCalculation:
                 from app.bot.onboarding import _finish_onboarding
                 await _finish_onboarding(update, ctx)
 
-        return captured_stage
+        return captured["stage"], captured
 
     async def test_has_debt_gives_stage_0(self):
-        assert await self._finish_with(has_debt=True, tickers=[]) == 0
+        stage, _ = await self._finish_with(has_debt=True, tickers=[])
+        assert stage == 0
 
     async def test_has_debt_with_fiis_still_gives_stage_0(self):
-        assert await self._finish_with(has_debt=True, tickers=["MXRF11"]) == 0
+        stage, _ = await self._finish_with(has_debt=True, tickers=["MXRF11"])
+        assert stage == 0
 
-    async def test_no_debt_no_fiis_gives_stage_1(self):
-        assert await self._finish_with(has_debt=False, tickers=[]) == 1
+    async def test_has_debt_with_essential_expense_still_gives_stage_0(self):
+        stage, _ = await self._finish_with(
+            has_debt=True, tickers=[], monthly_essential_expense=Decimal("1000")
+        )
+        assert stage == 0
 
-    async def test_no_debt_with_fiis_gives_stage_2(self):
-        assert await self._finish_with(has_debt=False, tickers=["MXRF11"]) == 2
+    async def test_no_debt_no_fiis_no_essential_expense_gives_stage_2(self):
+        stage, _ = await self._finish_with(has_debt=False, tickers=[])
+        assert stage == 2
+
+    async def test_no_debt_with_fiis_gives_stage_3(self):
+        stage, _ = await self._finish_with(has_debt=False, tickers=["MXRF11"])
+        assert stage == 3
+
+    async def test_no_debt_with_essential_expense_gives_stage_1(self):
+        stage, kwargs = await self._finish_with(
+            has_debt=False, tickers=[], monthly_essential_expense=Decimal("1200")
+        )
+        assert stage == 1
+        assert kwargs["monthly_essential_expense"] == Decimal("1200")
+
+    async def test_fiis_takes_priority_over_essential_expense(self):
+        stage, _ = await self._finish_with(
+            has_debt=False,
+            tickers=["MXRF11"],
+            monthly_essential_expense=Decimal("1200"),
+        )
+        assert stage == 3
 
 
 class TestCancel:
