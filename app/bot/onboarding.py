@@ -69,6 +69,11 @@ _CALLBACK_HAS_PORTFOLIO_SIM = "onb_portfolio_sim"
 _CALLBACK_HAS_PORTFOLIO_NAO = "onb_portfolio_nao"
 _CALLBACK_KNOWS_FII_SIM = "onb_knows_fii_sim"
 _CALLBACK_KNOWS_FII_NAO = "onb_knows_fii_nao"
+_CALLBACK_PORTFOLIO_SKIP = "onb_portfolio_skip"
+
+# callback_data do botão inline "🚀 Começar agora" enviado por cmd_unknown_message —
+# entra no onboarding igual ao /start.
+CALLBACK_COMECAR_AGORA = "unknown_start"
 
 
 def _parse_amount(text: str) -> Decimal | None:
@@ -286,8 +291,12 @@ async def ask_has_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
 
     if query.data == _CALLBACK_HAS_PORTFOLIO_SIM:
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🙅 Não tenho", callback_data=_CALLBACK_PORTFOLIO_SKIP),
+        ]])
         await query.edit_message_text(
-            "Manda os tickers separados por espaço ou vírgula. Ex: MXRF11 KNCR11"
+            "Manda os tickers separados por espaço ou vírgula. Ex: MXRF11 KNCR11",
+            reply_markup=keyboard,
         )
         return ASK_PORTFOLIO
 
