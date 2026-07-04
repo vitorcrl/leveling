@@ -1,8 +1,9 @@
 """
 Handlers de comandos do bot pós-onboarding.
 
-/atualizar <valor>  — atualiza o saldo atual da dívida (stage 0)
-                      se valor for 0, promove automaticamente para stage 1
+/atualizar          — conversa guiada: pergunta se foi pagamento de dívida (stage 0)
+                      ou dinheiro guardado para investir (stage 1), depois o valor.
+                      Valor 0 no fluxo de dívida promove automaticamente para stage 1.
 /pausar             — suspende o digest semanal proativo (controle explícito do usuário)
 /retomar            — reativa o digest semanal
 callback: stage_check_sim / stage_check_nao — resposta ao botão inline de promoção 1→2
@@ -17,8 +18,12 @@ from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
 )
 
+from app.bot.onboarding import CALLBACK_COMECAR_AGORA
 from app.core.database import AsyncSessionFactory
 from app.repositories.user_repository import UserRepository
 
@@ -26,6 +31,11 @@ logger = logging.getLogger(__name__)
 
 _CALLBACK_SIM = "stage_check_sim"
 _CALLBACK_NAO = "stage_check_nao"
+
+_CALLBACK_ATUALIZAR_DIVIDA = "atualizar_divida"
+_CALLBACK_ATUALIZAR_SAVINGS = "atualizar_savings"
+
+ASK_ATUALIZAR_TIPO, ASK_ATUALIZAR_VALOR = range(2)
 
 
 def _parse_amount(text: str) -> Decimal | None:
@@ -43,84 +53,179 @@ def _parse_amount(text: str) -> Decimal | None:
         return None
 
 
-async def cmd_atualizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handler de /atualizar <valor> — atualiza saldo da dívida."""
+def _fmt_reais(v: Decimal) -> str:
+    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+async def cmd_atualizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry point de /atualizar — pergunta se foi pagamento de dívida ou dinheiro guardado."""
     chat_id = update.effective_user.id
-
-    args = context.args or []
-    if not args:
-        await update.message.reply_text(
-            "Usa assim: /atualizar 3500\n"
-            "Manda o saldo atual da sua dívida. Se quitou tudo, manda /atualizar 0"
-        )
-        return
-
-    amount = _parse_amount(args[0])
-    if amount is None:
-        await update.message.reply_text(
-            "Não entendi o valor. Tenta: /atualizar 3500 ou /atualizar 0"
-        )
-        return
 
     async with AsyncSessionFactory() as session:
         repo = UserRepository(session)
         user = await repo.get_by_chat_id(chat_id)
 
-        if user is None or not user.onboarding_complete:
+    if user is None or not user.onboarding_complete:
+        await update.message.reply_text(
+            "Você ainda não completou o onboarding. Manda /start para começar."
+        )
+        return ConversationHandler.END
+
+    if user.stage not in (0, 1):
+        await update.message.reply_text(
+            "O comando /atualizar é para quem está no Estágio 0 (dívida) "
+            "ou Estágio 1 (caixinha).\n"
+            f"Você está no Estágio {user.stage}."
+        )
+        return ConversationHandler.END
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("💳 Paguei dívida", callback_data=_CALLBACK_ATUALIZAR_DIVIDA),
+        InlineKeyboardButton("💰 Guardei p/ investir", callback_data=_CALLBACK_ATUALIZAR_SAVINGS),
+    ]])
+    await update.message.reply_text(
+        "Você conseguiu quitar parte da dívida ou guardou dinheiro para investir?",
+        reply_markup=keyboard,
+    )
+    return ASK_ATUALIZAR_TIPO
+
+
+async def ask_atualizar_tipo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = update.effective_user.id
+    async with AsyncSessionFactory() as session:
+        repo = UserRepository(session)
+        user = await repo.get_by_chat_id(chat_id)
+
+    if query.data == _CALLBACK_ATUALIZAR_DIVIDA:
+        if user is None or user.stage != 0:
+            await query.edit_message_text(
+                "Esse fluxo é para quem está no Estágio 0 (dívida). "
+                "Seu perfil já não está mais nesse estágio."
+            )
+            return ConversationHandler.END
+        context.user_data["atualizar_tipo"] = "divida"
+        await query.edit_message_text(
+            "Quanto você pagou dessa vez?\nManda só o número. Ex: 200"
+        )
+    else:
+        if user is None or user.stage != 1:
+            await query.edit_message_text(
+                "Esse fluxo é para quem está no Estágio 1 (caixinha). "
+                "Seu perfil já não está mais nesse estágio."
+            )
+            return ConversationHandler.END
+        context.user_data["atualizar_tipo"] = "savings"
+        await query.edit_message_text(
+            "Quanto você guardou dessa vez?\nManda só o número. Ex: 100"
+        )
+
+    return ASK_ATUALIZAR_VALOR
+
+
+async def ask_atualizar_valor(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    chat_id = update.effective_user.id
+    amount = _parse_amount(update.message.text)
+
+    if amount is None:
+        await update.message.reply_text("Não entendi o valor. Manda só o número. Ex: 200")
+        return ASK_ATUALIZAR_VALOR
+
+    tipo = context.user_data.get("atualizar_tipo")
+
+    async with AsyncSessionFactory() as session:
+        repo = UserRepository(session)
+        user = await repo.get_by_chat_id(chat_id)
+
+        if user is None:
             await update.message.reply_text(
                 "Você ainda não completou o onboarding. Manda /start para começar."
             )
-            return
+            return ConversationHandler.END
 
-        if user.stage != 0:
+        if tipo == "divida":
+            debt = await repo.add_debt_payment(user.id, amount)
+            if debt is None:
+                await update.message.reply_text(
+                    "Não encontrei uma dívida ativa no seu perfil. "
+                    "Se precisar, manda /start para refazer o onboarding."
+                )
+                return ConversationHandler.END
+
+            if debt.current_amount <= 0:
+                await repo.promote_stage(user.id, new_stage=1)
+                await update.message.reply_text(
+                    "🎉 Parabéns! Você quitou a dívida!\n\n"
+                    "Você avançou para o *Estágio 1: Construindo a caixinha*.\n"
+                    "Agora o foco é acumular R$ 1.000 para partir para os FIIs!",
+                    parse_mode="Markdown",
+                )
+                logger.info("cmd_atualizar: chat_id=%s promoted to stage 1", chat_id)
+                context.user_data.pop("atualizar_tipo", None)
+                return ConversationHandler.END
+
+            paid = max(debt.initial_amount - debt.current_amount, Decimal(0))
+            pct = (paid / debt.initial_amount * 100) if debt.initial_amount else Decimal(0)
+            pct_str = f"{pct:.1f}".replace(".", ",")
+
             await update.message.reply_text(
-                "O comando /atualizar é para quem está quitando dívidas (Estágio 0).\n"
-                f"Você está no Estágio {user.stage}."
+                f"✅ Dívida atualizada!\n\n"
+                f"Você pagou: {_fmt_reais(amount)}\n"
+                f"Saldo restante: {_fmt_reais(debt.current_amount)}\n"
+                f"Pago até agora: {pct_str}%\n\n"
+                f"Continue assim! Quando quitar tudo, você avança de estágio. 💪"
             )
-            return
-
-        debt = await repo.get_active_debt(user.id)
-        if debt is None:
+            logger.info(
+                "cmd_atualizar: chat_id=%s paid %s off debt (%.1f%% paid)",
+                chat_id,
+                amount,
+                float(pct),
+            )
+        else:
+            user = await repo.add_savings(user.id, amount)
             await update.message.reply_text(
-                "Não encontrei uma dívida ativa no seu perfil. "
-                "Se precisar, manda /start para refazer o onboarding."
+                f"✅ Caixinha atualizada!\n\n"
+                f"Você guardou: {_fmt_reais(amount)}\n"
+                f"Total guardado: {_fmt_reais(user.savings_amount)}\n\n"
+                f"Continue guardando! Quando tiver capital suficiente, "
+                f"a gente parte para os FIIs. 📈"
             )
-            return
-
-        if amount == 0:
-            await repo.promote_stage(user.id, new_stage=1)
-            await update.message.reply_text(
-                "🎉 Parabéns! Você quitou a dívida!\n\n"
-                "Você avançou para o *Estágio 1: Construindo a caixinha*.\n"
-                "Agora o foco é acumular R$ 1.000 para partir para os FIIs!",
-                parse_mode="Markdown",
+            logger.info(
+                "cmd_atualizar: chat_id=%s added %s to savings (total=%s)",
+                chat_id,
+                amount,
+                user.savings_amount,
             )
-            logger.info("cmd_atualizar: chat_id=%s promoted to stage 1", chat_id)
-            return
 
-        await repo.update_debt_amount(user.id, amount)
-        debt = await repo.get_active_debt(user.id)
+    context.user_data.pop("atualizar_tipo", None)
+    return ConversationHandler.END
 
-        paid = max(debt.initial_amount - debt.current_amount, Decimal(0))
-        pct = (paid / debt.initial_amount * 100) if debt.initial_amount else Decimal(0)
-        pct_str = f"{pct:.1f}".replace(".", ",")
 
-        def _fmt(v: Decimal) -> str:
-            return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+async def cancel_atualizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    context.user_data.pop("atualizar_tipo", None)
+    await update.message.reply_text("Atualização cancelada.")
+    return ConversationHandler.END
 
-        await update.message.reply_text(
-            f"✅ Saldo atualizado!\n\n"
-            f"Dívida inicial: {_fmt(debt.initial_amount)}\n"
-            f"Saldo atual: {_fmt(amount)}\n"
-            f"Pago até agora: {pct_str}%\n\n"
-            f"Continue assim! Quando chegar em 0, manda /atualizar 0 para avançar. 💪"
-        )
-        logger.info(
-            "cmd_atualizar: chat_id=%s updated debt to %s (%.1f%% paid)",
-            chat_id,
-            amount,
-            float(pct),
-        )
+
+def build_atualizar_handler() -> ConversationHandler:
+    return ConversationHandler(
+        entry_points=[CommandHandler("atualizar", cmd_atualizar)],
+        states={
+            ASK_ATUALIZAR_TIPO: [
+                CallbackQueryHandler(
+                    ask_atualizar_tipo,
+                    pattern=f"^({_CALLBACK_ATUALIZAR_DIVIDA}|{_CALLBACK_ATUALIZAR_SAVINGS})$",
+                ),
+            ],
+            ASK_ATUALIZAR_VALOR: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_atualizar_valor),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", cancel_atualizar)],
+        allow_reentry=True,
+    )
 
 
 async def cmd_pausar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -185,12 +290,36 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "2️⃣ Investindo em FIIs — renda passiva crescendo toda semana\n\n"
         "*Comandos disponíveis:*\n"
         "/start — inicia ou refaz o onboarding\n"
-        "/atualizar <valor> — atualiza o saldo da dívida (estágio 0)\n"
+        "/atualizar — registra pagamento de dívida (estágio 0) ou dinheiro guardado (estágio 1)\n"
         "/pausar — pausa os envios semanais\n"
         "/retomar — retoma os envios semanais\n"
         "/reset — apaga seu perfil e começa do zero\n"
         "/ajuda — mostra esta mensagem",
         parse_mode="Markdown",
+    )
+
+
+async def cmd_unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler para qualquer mensagem fora de um ConversationHandler ativo."""
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🚀 Começar agora", callback_data=CALLBACK_COMECAR_AGORA),
+    ]])
+    await update.message.reply_text(
+        "👋 Olá! Sou o *Leveling* — seu acompanhante de independência financeira.\n\n"
+        "A jornada começa onde você está — mesmo que seja no vermelho.\n\n"
+        "🎯 *Como funciona:*\n"
+        "Você define 3 metas reais — coisas do dia a dia que quer que seus investimentos paguem.\n\n"
+        "Exemplo:\n"
+        "🥤 Monster → R$ 12/mês\n"
+        "🏋️ Academia → R$ 80/mês\n"
+        "☕ Café diário → R$ 90/mês\n\n"
+        "Cada semana você vê o progresso até essas metas virarem renda passiva de verdade.\n\n"
+        "Você pode estar em qualquer ponto:\n"
+        "0️⃣ Quitando dívidas\n"
+        "1️⃣ Guardando na caixinha\n"
+        "2️⃣ Investindo em FIIs",
+        parse_mode="Markdown",
+        reply_markup=keyboard,
     )
 
 
@@ -251,7 +380,6 @@ async def callback_stage_check(update: Update, context: ContextTypes.DEFAULT_TYP
 
 def build_command_handlers() -> list:
     return [
-        CommandHandler("atualizar", cmd_atualizar),
         CommandHandler("pausar", cmd_pausar),
         CommandHandler("retomar", cmd_retomar),
         CommandHandler("ajuda", cmd_ajuda),
