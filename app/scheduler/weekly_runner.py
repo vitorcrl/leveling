@@ -2,10 +2,13 @@
 Scheduler semanal da jornada financeira.
 
 Itera por todos os usuários com onboarding completo e envia uma mensagem
-personalizada baseada no stage atual de cada um.
+personalizada baseada no stage atual de cada um. Cada usuário escolhe seu
+próprio dia da semana via /diadigest (User.digest_weekday) — o scheduler
+(app/bot/main.py) roda esta função todo dia no horário configurado, e o
+filtro de dia acontece aqui dentro.
 
 Invocado via: python -m app.scheduler.weekly_runner
-Geralmente chamado por cron toda segunda-feira às 8h.
+Geralmente chamado por cron todo dia às 8h (o filtro de dia é por usuário).
 
 Stage 0 — quitando dívida: progresso no pagamento + motivação
 Stage 1 — reserva de emergência (Estágio 0.5): saldo acumulado + proximidade da meta (5x gasto essencial)
@@ -17,15 +20,19 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.adapters.delivery.telegram_adapter import TelegramAdapter
 from app.core.config import get_settings
 from app.domain.fii_catalog import suggest_fiis
+from app.domain.models_journey import JourneyDigestContext
 from app.domain.models_user import User, UserDebt, UserEmergencyFund, UserGoal
-from app.domain.ports import DeliveryPort
+from app.domain.ports import DeliveryPort, NarratorPort
 from app.repositories.user_repository import UserRepository
+
+_BRT = ZoneInfo("America/Sao_Paulo")
 
 _STAGE_CHECK_COOLDOWN_DAYS = 6  # não pergunta mais de uma vez por semana
 _DEBT_CELEBRATION_STEP = Decimal("100")  # celebra a cada R$100 quitados
@@ -156,7 +163,64 @@ async def _send_stage2_check(bot: Bot, repo: UserRepository, user: User) -> None
     logger.info("weekly_runner: sent stage-2 check to chat_id=%s", user.telegram_chat_id)
 
 
-async def send_weekly_digest(delivery: DeliveryPort, bot: Bot | None = None) -> dict[str, int]:
+async def _prepare_message(
+    repo: UserRepository, user: User, narrator: NarratorPort | None
+) -> str | None:
+    """
+    Monta a mensagem semanal de 1 usuário. Retorna None para stage desconhecido
+    (chamador decide se isso conta como "skipped").
+    """
+    debt = await repo.get_active_debt(user.id)
+    goal = await repo.get_active_goal(user.id)
+    fund = await repo.get_active_emergency_fund(user.id) if user.stage == 1 else None
+
+    if user.stage == 0 and debt is not None:
+        paid = max(debt.initial_amount - debt.current_amount, Decimal(0))
+        milestone = _debt_celebration_milestone(paid)
+        if milestone > (debt.last_celebrated_amount or Decimal(0)):
+            await repo.mark_debt_celebrated(debt.id, milestone)
+
+    if user.stage not in (0, 1, 2, 3):
+        logger.warning(
+            "weekly_runner: unknown stage=%d for chat_id=%s — skipping",
+            user.stage,
+            user.telegram_chat_id,
+        )
+        return None
+
+    if narrator is not None:
+        context = JourneyDigestContext(
+            user=user, debt=debt, fund=fund, goal=goal, profile_summary=user.user_profile_summary
+        )
+        return await narrator.narrate(context)
+
+    if user.stage == 0:
+        return _build_stage0_message(user, debt, goal)
+    if user.stage == 1:
+        return _build_stage1_message(user, fund, goal)
+    if user.stage == 2:
+        return _build_stage2_message(user, goal)
+    return _build_stage3_message(user, goal)
+
+
+async def build_digest_message_for_user(
+    repo: UserRepository, user: User, narrator: NarratorPort | None = None
+) -> str | None:
+    """Monta a mensagem semanal de 1 usuário só — usado por /testardigest (disparo manual)."""
+    return await _prepare_message(repo, user, narrator)
+
+
+async def send_weekly_digest(
+    delivery: DeliveryPort,
+    bot: Bot | None = None,
+    weekday: int | None = None,
+    narrator: NarratorPort | None = None,
+) -> dict[str, int]:
+    """
+    weekday: se informado, envia só para usuários com `digest_weekday == weekday`
+    (convenção 0=segunda ... 6=domingo). Se None, envia para todos os ativos
+    (usado por /testardigest, que já filtra o usuário antes de chamar).
+    """
     from app.core.database import AsyncSessionFactory
 
     sent = skipped = errors = 0
@@ -165,37 +229,20 @@ async def send_weekly_digest(delivery: DeliveryPort, bot: Bot | None = None) -> 
         repo = UserRepository(session)
         users = await repo.get_all_active()
 
-        logger.info("weekly_runner: %d active users found", len(users))
+        if weekday is not None:
+            users = [u for u in users if u.digest_weekday == weekday]
+
+        logger.info("weekly_runner: %d active users found (weekday filter=%s)", len(users), weekday)
 
         for user in users:
             try:
-                debt = await repo.get_active_debt(user.id)
-                goal = await repo.get_active_goal(user.id)
-
-                if user.stage == 0:
-                    message = _build_stage0_message(user, debt, goal)
-                    if debt is not None:
-                        paid = max(debt.initial_amount - debt.current_amount, Decimal(0))
-                        milestone = _debt_celebration_milestone(paid)
-                        if milestone > (debt.last_celebrated_amount or Decimal(0)):
-                            await repo.mark_debt_celebrated(debt.id, milestone)
-                elif user.stage == 1:
-                    fund = await repo.get_active_emergency_fund(user.id)
-                    message = _build_stage1_message(user, fund, goal)
-                elif user.stage == 2:
-                    message = _build_stage2_message(user, goal)
-                    if bot is not None and _should_send_stage_check(user):
-                        await _send_stage2_check(bot, repo, user)
-                elif user.stage == 3:
-                    message = _build_stage3_message(user, goal)
-                else:
-                    logger.warning(
-                        "weekly_runner: unknown stage=%d for chat_id=%s — skipping",
-                        user.stage,
-                        user.telegram_chat_id,
-                    )
+                message = await _prepare_message(repo, user, narrator)
+                if message is None:
                     skipped += 1
                     continue
+
+                if user.stage == 2 and bot is not None and _should_send_stage_check(user):
+                    await _send_stage2_check(bot, repo, user)
 
                 await delivery.send(message, chat_id=user.telegram_chat_id)
                 sent += 1
@@ -215,9 +262,10 @@ async def send_weekly_digest(delivery: DeliveryPort, bot: Bot | None = None) -> 
 
 async def run() -> None:
     settings = get_settings()
+    now = datetime.now(_BRT)
     async with Bot(token=settings.TELEGRAM_BOT_TOKEN) as bot:
         delivery = TelegramAdapter(bot)
-        result = await send_weekly_digest(delivery, bot=bot)
+        result = await send_weekly_digest(delivery, bot=bot, weekday=now.weekday())
     logger.info("weekly_runner: done — %s", result)
 
 
