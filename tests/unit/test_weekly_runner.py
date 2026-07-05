@@ -18,11 +18,18 @@ from app.scheduler.weekly_runner import (
     _debt_celebration_milestone,
     _fmt,
     _should_send_stage_check,
+    build_digest_message_for_user,
     send_weekly_digest,
 )
 
 
-def make_user(stage: int = 0, budget: str = "500", stage_check_sent_at=None) -> MagicMock:
+def make_user(
+    stage: int = 0,
+    budget: str = "500",
+    stage_check_sent_at=None,
+    digest_weekday: int = 0,
+    user_profile_summary: dict | None = None,
+) -> MagicMock:
     user = MagicMock()
     user.id = "user-uuid-1"
     user.telegram_chat_id = 123456
@@ -30,6 +37,8 @@ def make_user(stage: int = 0, budget: str = "500", stage_check_sent_at=None) -> 
     user.monthly_budget = Decimal(budget)
     user.risk_profile = "conservador"
     user.stage_check_sent_at = stage_check_sent_at
+    user.digest_weekday = digest_weekday
+    user.user_profile_summary = user_profile_summary
     return user
 
 
@@ -364,6 +373,163 @@ class TestSendWeeklyDigest:
         assert result["skipped"] == 1
         assert result["errors"] == 0
         delivery.send.assert_not_called()
+
+
+class TestWeekdayFilter:
+    def _make_delivery(self) -> MagicMock:
+        delivery = MagicMock()
+        delivery.send = AsyncMock()
+        return delivery
+
+    def _patch_repo(self, users):
+        mock_factory = MagicMock()
+        mock_session = AsyncMock()
+        mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_repo = AsyncMock()
+        mock_repo.get_all_active = AsyncMock(return_value=users)
+        mock_repo.get_active_debt = AsyncMock(return_value=None)
+        mock_repo.get_active_goal = AsyncMock(return_value=None)
+        mock_repo.get_active_emergency_fund = AsyncMock(return_value=None)
+        return mock_factory, mock_repo
+
+    async def test_only_users_with_matching_weekday_receive_digest(self):
+        wednesday_user = make_user(stage=0, digest_weekday=2)
+        wednesday_user.telegram_chat_id = 111
+        monday_user = make_user(stage=0, digest_weekday=0)
+        monday_user.telegram_chat_id = 222
+
+        mock_factory, mock_repo = self._patch_repo([wednesday_user, monday_user])
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.scheduler.weekly_runner.UserRepository", return_value=mock_repo):
+                delivery = self._make_delivery()
+                result = await send_weekly_digest(delivery, weekday=2)
+
+        assert result["sent"] == 1
+        delivery.send.assert_called_once()
+        assert delivery.send.call_args.kwargs["chat_id"] == 111
+
+    async def test_none_weekday_sends_to_all(self):
+        user_a = make_user(stage=0, digest_weekday=2)
+        user_b = make_user(stage=0, digest_weekday=5)
+        mock_factory, mock_repo = self._patch_repo([user_a, user_b])
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.scheduler.weekly_runner.UserRepository", return_value=mock_repo):
+                delivery = self._make_delivery()
+                result = await send_weekly_digest(delivery, weekday=None)
+
+        assert result["sent"] == 2
+
+    async def test_no_users_match_weekday_sends_nothing(self):
+        user = make_user(stage=0, digest_weekday=0)
+        mock_factory, mock_repo = self._patch_repo([user])
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.scheduler.weekly_runner.UserRepository", return_value=mock_repo):
+                delivery = self._make_delivery()
+                result = await send_weekly_digest(delivery, weekday=6)
+
+        assert result["sent"] == 0
+        delivery.send.assert_not_called()
+
+
+class TestNarratorIntegration:
+    def _patch_repo(self, user):
+        mock_factory = MagicMock()
+        mock_session = AsyncMock()
+        mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_repo = AsyncMock()
+        mock_repo.get_all_active = AsyncMock(return_value=[user])
+        mock_repo.get_active_debt = AsyncMock(return_value=None)
+        mock_repo.get_active_goal = AsyncMock(return_value=None)
+        mock_repo.get_active_emergency_fund = AsyncMock(return_value=None)
+        return mock_factory, mock_repo
+
+    async def test_uses_narrator_output_when_provided(self):
+        user = make_user(stage=0)
+        mock_factory, mock_repo = self._patch_repo(user)
+
+        narrator = AsyncMock()
+        narrator.narrate = AsyncMock(return_value="mensagem personalizada")
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.scheduler.weekly_runner.UserRepository", return_value=mock_repo):
+                delivery = MagicMock()
+                delivery.send = AsyncMock()
+                await send_weekly_digest(delivery, narrator=narrator)
+
+        narrator.narrate.assert_called_once()
+        delivery.send.assert_called_once_with("mensagem personalizada", chat_id=user.telegram_chat_id)
+
+    async def test_narrator_receives_journey_digest_context(self):
+        from app.domain.models_journey import JourneyDigestContext
+
+        user = make_user(stage=0, user_profile_summary={"resumo": "x"})
+        mock_factory, mock_repo = self._patch_repo(user)
+
+        narrator = AsyncMock()
+        narrator.narrate = AsyncMock(return_value="ok")
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.scheduler.weekly_runner.UserRepository", return_value=mock_repo):
+                delivery = MagicMock()
+                delivery.send = AsyncMock()
+                await send_weekly_digest(delivery, narrator=narrator)
+
+        context = narrator.narrate.call_args.args[0]
+        assert isinstance(context, JourneyDigestContext)
+        assert context.user is user
+        assert context.profile_summary == {"resumo": "x"}
+
+    async def test_no_narrator_falls_back_to_deterministic_message(self):
+        user = make_user(stage=0)
+        mock_factory, mock_repo = self._patch_repo(user)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.scheduler.weekly_runner.UserRepository", return_value=mock_repo):
+                delivery = MagicMock()
+                delivery.send = AsyncMock()
+                await send_weekly_digest(delivery, narrator=None)
+
+        msg = delivery.send.call_args.args[0]
+        assert "Estágio 0" in msg
+
+
+class TestBuildDigestMessageForUser:
+    async def test_returns_message_for_single_user(self):
+        user = make_user(stage=0)
+        mock_repo = AsyncMock()
+        mock_repo.get_active_debt = AsyncMock(return_value=make_debt())
+        mock_repo.get_active_goal = AsyncMock(return_value=None)
+
+        message = await build_digest_message_for_user(mock_repo, user)
+
+        assert "Estágio 0" in message
+
+    async def test_returns_none_for_unknown_stage(self):
+        user = make_user(stage=99)
+        mock_repo = AsyncMock()
+        mock_repo.get_active_debt = AsyncMock(return_value=None)
+        mock_repo.get_active_goal = AsyncMock(return_value=None)
+
+        message = await build_digest_message_for_user(mock_repo, user)
+
+        assert message is None
+
+    async def test_does_not_trigger_stage_check_side_effect(self):
+        """/testardigest não deve mandar o botão inline de stage_check (não tem bot)."""
+        user = make_user(stage=2)
+        mock_repo = AsyncMock()
+        mock_repo.get_active_debt = AsyncMock(return_value=None)
+        mock_repo.get_active_goal = AsyncMock(return_value=None)
+        mock_repo.mark_stage_check_sent = AsyncMock()
+
+        await build_digest_message_for_user(mock_repo, user)
+
+        mock_repo.mark_stage_check_sent.assert_not_called()
 
 
 class TestPaidNeverNegative:

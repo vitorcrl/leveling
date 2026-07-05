@@ -18,6 +18,7 @@ from app.bot.onboarding import (
     ASK_HAS_PORTFOLIO,
     ASK_KNOWS_FII,
     ASK_PORTFOLIO,
+    ASK_PORTFOLIO_SHARES,
     ASK_PROFILE,
     ASK_SAVINGS,
     CALLBACK_COMECAR_AGORA,
@@ -32,6 +33,7 @@ from app.bot.onboarding import (
     _CALLBACK_PORTFOLIO_SKIP,
     _DATA,
     _parse_amount,
+    _parse_shares,
     _parse_tickers,
     ask_budget,
     ask_debt,
@@ -43,6 +45,7 @@ from app.bot.onboarding import (
     ask_has_portfolio,
     ask_knows_fii,
     ask_portfolio,
+    ask_portfolio_shares,
     ask_portfolio_skip,
     ask_portfolio_skip_callback,
     ask_profile_callback,
@@ -52,6 +55,17 @@ from app.bot.onboarding import (
     start,
 )
 from telegram.ext import CallbackQueryHandler, ConversationHandler
+
+
+@pytest.fixture(autouse=True)
+def _no_profile_generation():
+    """
+    Evita disparar asyncio.create_task real nos testes — sem isso, a tarefa em
+    background (ver profile_service) sobrevive ao fim do event loop do teste e
+    gera RuntimeWarning em testes seguintes quando é coletada pelo GC.
+    """
+    with patch("app.bot.onboarding._trigger_profile_generation"):
+        yield
 
 
 def make_update(text: str, user_id: int = 123456) -> MagicMock:
@@ -111,6 +125,23 @@ class TestParseAmount:
     def test_ignores_extra_text_after_number(self):
         # "Sim 1000" — usuário mandou resposta junto com o valor
         assert _parse_amount("Sim 1000") is None  # parse_amount recebe só o número já limpo
+
+
+class TestParseShares:
+    def test_positive_integer(self):
+        assert _parse_shares("10") == 10
+
+    def test_zero_returns_none(self):
+        assert _parse_shares("0") is None
+
+    def test_negative_returns_none(self):
+        assert _parse_shares("-5") is None
+
+    def test_non_digit_returns_none(self):
+        assert _parse_shares("dez") is None
+
+    def test_decimal_returns_none(self):
+        assert _parse_shares("10.5") is None
 
 
 class TestParseTickers:
@@ -446,7 +477,7 @@ class TestAskKnowsFii:
                 await ask_knows_fii(update, ctx)
 
         call_kwargs = mock_repo.save_onboarding.call_args.kwargs
-        assert call_kwargs["portfolio_tickers"] == []
+        assert call_kwargs["portfolio_shares"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -465,26 +496,16 @@ def _base_data() -> dict:
 
 
 class TestAskPortfolio:
-    async def test_valid_tickers_stored(self):
+    async def test_valid_tickers_asks_first_ticker_shares(self):
         update = make_update("MXRF11 KNCR11")
         ctx = make_context(_base_data())
+        result = await ask_portfolio(update, ctx)
 
-        with patch("app.core.database.AsyncSessionFactory") as mock_factory:
-            mock_session = AsyncMock()
-            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
-            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
-
-            mock_repo = AsyncMock()
-            mock_repo.save_onboarding = AsyncMock()
-
-            with patch("app.bot.onboarding.UserRepository", return_value=mock_repo):
-                result = await ask_portfolio(update, ctx)
-
-        assert result == ConversationHandler.END
-        call_kwargs = mock_repo.save_onboarding.call_args.kwargs
-        assert call_kwargs["portfolio_tickers"] == ["MXRF11", "KNCR11"]
-        assert call_kwargs["stage"] == 3
-        assert call_kwargs["savings_amount"] == Decimal("200")
+        assert result == ASK_PORTFOLIO_SHARES
+        assert ctx.user_data[_DATA]["portfolio_tickers_pending"] == ["MXRF11", "KNCR11"]
+        assert ctx.user_data[_DATA]["portfolio_shares"] == {}
+        msg = update.message.reply_text.call_args.args[0]
+        assert "MXRF11" in msg
 
     async def test_invalid_tickers_stays_on_same_state(self):
         update = make_update("não tenho nenhum")
@@ -509,7 +530,7 @@ class TestAskPortfolio:
 
         assert result == ConversationHandler.END
         call_kwargs = mock_repo.save_onboarding.call_args.kwargs
-        assert call_kwargs["portfolio_tickers"] == []
+        assert call_kwargs["portfolio_shares"] == {}
         assert call_kwargs["stage"] == 2
 
     async def test_skip_callback_sets_empty_portfolio(self):
@@ -531,15 +552,63 @@ class TestAskPortfolio:
         assert result == ConversationHandler.END
         update.callback_query.answer.assert_called_once()
         call_kwargs = mock_repo.save_onboarding.call_args.kwargs
-        assert call_kwargs["portfolio_tickers"] == []
+        assert call_kwargs["portfolio_shares"] == {}
         assert call_kwargs["stage"] == 2
+
+
+class TestAskPortfolioShares:
+    def _ctx_with_pending(self, pending: list[str], shares: dict | None = None) -> MagicMock:
+        data = _base_data()
+        data["portfolio_tickers_pending"] = list(pending)
+        data["portfolio_shares"] = shares or {}
+        return make_context(data)
+
+    async def test_valid_shares_asks_next_ticker(self):
+        update = make_update("10")
+        ctx = self._ctx_with_pending(["MXRF11", "KNCR11"])
+        result = await ask_portfolio_shares(update, ctx)
+
+        assert result == ASK_PORTFOLIO_SHARES
+        assert ctx.user_data[_DATA]["portfolio_shares"] == {"MXRF11": 10}
+        assert ctx.user_data[_DATA]["portfolio_tickers_pending"] == ["KNCR11"]
+        msg = update.message.reply_text.call_args.args[0]
+        assert "KNCR11" in msg
+
+    async def test_invalid_shares_stays_on_same_state_without_advancing(self):
+        update = make_update("dez")
+        ctx = self._ctx_with_pending(["MXRF11"])
+        result = await ask_portfolio_shares(update, ctx)
+
+        assert result == ASK_PORTFOLIO_SHARES
+        assert ctx.user_data[_DATA]["portfolio_shares"] == {}
+        assert ctx.user_data[_DATA]["portfolio_tickers_pending"] == ["MXRF11"]
+
+    async def test_last_ticker_finishes_onboarding(self):
+        update = make_update("5")
+        ctx = self._ctx_with_pending(["KNCR11"], shares={"MXRF11": 10})
+
+        with patch("app.core.database.AsyncSessionFactory") as mock_factory:
+            mock_session = AsyncMock()
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+
+            mock_repo = AsyncMock()
+            mock_repo.save_onboarding = AsyncMock()
+
+            with patch("app.bot.onboarding.UserRepository", return_value=mock_repo):
+                result = await ask_portfolio_shares(update, ctx)
+
+        assert result == ConversationHandler.END
+        call_kwargs = mock_repo.save_onboarding.call_args.kwargs
+        assert call_kwargs["portfolio_shares"] == {"MXRF11": 10, "KNCR11": 5}
+        assert call_kwargs["stage"] == 3
 
 
 class TestStageCalculation:
     async def _finish_with(
         self,
         has_debt: bool,
-        tickers: list[str],
+        portfolio_shares: dict[str, int],
         monthly_essential_expense: Decimal | None = None,
     ) -> tuple[int, dict]:
         data = _base_data()
@@ -547,7 +616,7 @@ class TestStageCalculation:
         if has_debt:
             data["debt_amount"] = Decimal("3000")
             data.pop("savings_amount", None)
-        data["portfolio_tickers"] = tickers
+        data["portfolio_shares"] = portfolio_shares
         if monthly_essential_expense is not None:
             data["monthly_essential_expense"] = monthly_essential_expense
 
@@ -558,6 +627,7 @@ class TestStageCalculation:
 
         async def capture(**kwargs):
             captured.update(kwargs)
+            return MagicMock(id="user-uuid-1")
 
         with patch("app.bot.onboarding.AsyncSessionFactory") as mock_factory:
             mock_session = AsyncMock()
@@ -567,35 +637,35 @@ class TestStageCalculation:
             mock_repo.save_onboarding = AsyncMock(side_effect=capture)
             with patch("app.bot.onboarding.UserRepository", return_value=mock_repo):
                 from app.bot.onboarding import _finish_onboarding
-                await _finish_onboarding(update, ctx)
+                await _finish_onboarding(update, ctx, error_state=ASK_PORTFOLIO_SHARES)
 
         return captured["stage"], captured
 
     async def test_has_debt_gives_stage_0(self):
-        stage, _ = await self._finish_with(has_debt=True, tickers=[])
+        stage, _ = await self._finish_with(has_debt=True, portfolio_shares={})
         assert stage == 0
 
     async def test_has_debt_with_fiis_still_gives_stage_0(self):
-        stage, _ = await self._finish_with(has_debt=True, tickers=["MXRF11"])
+        stage, _ = await self._finish_with(has_debt=True, portfolio_shares={"MXRF11": 10})
         assert stage == 0
 
     async def test_has_debt_with_essential_expense_still_gives_stage_0(self):
         stage, _ = await self._finish_with(
-            has_debt=True, tickers=[], monthly_essential_expense=Decimal("1000")
+            has_debt=True, portfolio_shares={}, monthly_essential_expense=Decimal("1000")
         )
         assert stage == 0
 
     async def test_no_debt_no_fiis_no_essential_expense_gives_stage_2(self):
-        stage, _ = await self._finish_with(has_debt=False, tickers=[])
+        stage, _ = await self._finish_with(has_debt=False, portfolio_shares={})
         assert stage == 2
 
     async def test_no_debt_with_fiis_gives_stage_3(self):
-        stage, _ = await self._finish_with(has_debt=False, tickers=["MXRF11"])
+        stage, _ = await self._finish_with(has_debt=False, portfolio_shares={"MXRF11": 10})
         assert stage == 3
 
     async def test_no_debt_with_essential_expense_gives_stage_1(self):
         stage, kwargs = await self._finish_with(
-            has_debt=False, tickers=[], monthly_essential_expense=Decimal("1200")
+            has_debt=False, portfolio_shares={}, monthly_essential_expense=Decimal("1200")
         )
         assert stage == 1
         assert kwargs["monthly_essential_expense"] == Decimal("1200")
@@ -603,10 +673,56 @@ class TestStageCalculation:
     async def test_fiis_takes_priority_over_essential_expense(self):
         stage, _ = await self._finish_with(
             has_debt=False,
-            tickers=["MXRF11"],
+            portfolio_shares={"MXRF11": 10},
             monthly_essential_expense=Decimal("1200"),
         )
         assert stage == 3
+
+
+class TestFinishOnboardingErrorRecovery:
+    """Item 2 — erro em save_onboarding nunca encerra a conversa nem apaga o progresso."""
+
+    async def test_save_failure_returns_error_state_and_keeps_data(self):
+        data = _base_data()
+        data["portfolio_shares"] = {}
+        update = make_update("qualquer")
+        ctx = make_context(data)
+
+        with patch("app.bot.onboarding.AsyncSessionFactory") as mock_factory:
+            mock_session = AsyncMock()
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_repo = AsyncMock()
+            mock_repo.save_onboarding = AsyncMock(side_effect=Exception("db down"))
+            with patch("app.bot.onboarding.UserRepository", return_value=mock_repo):
+                from app.bot.onboarding import _finish_onboarding
+                result = await _finish_onboarding(update, ctx, error_state=ASK_KNOWS_FII)
+
+        assert result == ASK_KNOWS_FII
+        assert _DATA in ctx.user_data
+        assert ctx.user_data[_DATA] == data
+        msg = update.message.reply_text.call_args.args[0]
+        assert "Ops" in msg
+
+    async def test_save_failure_via_callback_update_returns_error_state(self):
+        data = _base_data()
+        data["portfolio_shares"] = {}
+        update = make_callback_update(_CALLBACK_PORTFOLIO_SKIP)
+        update.callback_query.message.reply_text = AsyncMock()
+        ctx = make_context(data)
+
+        with patch("app.bot.onboarding.AsyncSessionFactory") as mock_factory:
+            mock_session = AsyncMock()
+            mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+            mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+            mock_repo = AsyncMock()
+            mock_repo.save_onboarding = AsyncMock(side_effect=Exception("db down"))
+            with patch("app.bot.onboarding.UserRepository", return_value=mock_repo):
+                from app.bot.onboarding import _finish_onboarding
+                result = await _finish_onboarding(update, ctx, error_state=ASK_PORTFOLIO)
+
+        assert result == ASK_PORTFOLIO
+        assert _DATA in ctx.user_data
 
 
 class TestCancel:
