@@ -15,6 +15,7 @@ Fluxo:
     → ASK_PROFILE: perfil de risco (inline: conservador/moderado com explicação)
     → ASK_HAS_PORTFOLIO: já tem FIIs? (sim/não via botões)
     → [sim] ASK_PORTFOLIO: lista de tickers
+      → ASK_PORTFOLIO_SHARES: quantas cotas de cada ticker, uma pergunta por vez
     → [não] ASK_KNOWS_FII: já conhece FIIs? (sim/não via botões — explica se não souber)
     → DONE: grava tudo, manda mensagem de boas-vindas + comandos disponíveis
 
@@ -25,6 +26,7 @@ Stage calculado na hora do commit:
   - Sem dívida, com FII                              → 3 (investindo em FIIs)
 """
 
+import asyncio
 import logging
 import re
 from decimal import Decimal, InvalidOperation
@@ -61,8 +63,9 @@ logger = logging.getLogger(__name__)
     ASK_PROFILE,
     ASK_HAS_PORTFOLIO,
     ASK_PORTFOLIO,
+    ASK_PORTFOLIO_SHARES,
     ASK_KNOWS_FII,
-) = range(11)
+) = range(12)
 
 # tokens aceitos como "não sei" na pergunta de gasto essencial (case-insensitive)
 _DONT_KNOW_TOKENS = {"não sei", "nao sei", "não faço ideia", "nao faco ideia"}
@@ -110,6 +113,56 @@ def _parse_tickers(text: str) -> list[str]:
     return [t for t in tokens if re.match(r"^[A-Z]{4}\d{1,2}$", t)]
 
 
+def _parse_shares(text: str) -> int | None:
+    """Aceita só dígitos positivos (quantidade de cotas). Ex: '10'. None se inválido ou zero."""
+    cleaned = text.strip()
+    if not cleaned.isdigit():
+        return None
+    value = int(cleaned)
+    return value if value > 0 else None
+
+
+_MAX_RAW_VALUE_LEN = 200
+
+
+def _record_event(
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    step: str,
+    response_type: str,
+    raw_value: str | None = None,
+) -> None:
+    """
+    Acumula um evento de analytics em memória (ver OnboardingEvent) — inserido
+    no banco só quando `save_onboarding` roda, na mesma transação. Não afeta
+    nenhuma lógica de negócio, é só instrumentação.
+    """
+    events: list = context.user_data[_DATA].setdefault("events", [])
+    events.append({
+        "step": step,
+        "response_type": response_type,
+        "raw_value": raw_value[:_MAX_RAW_VALUE_LEN] if raw_value else raw_value,
+    })
+
+
+# Referências às tasks em voo — sem isso, o garbage collector pode coletar a
+# task no meio da execução (asyncio.create_task não mantém referência forte).
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _trigger_profile_generation(user_id) -> None:
+    """
+    Dispara a geração do perfil de IA em background, sem bloquear o onboarding.
+    Se falhar, o perfil fica NULL e o narrator cai no fallback estático — ver
+    app/services/profile_service.py.
+    """
+    from app.services.profile_service import generate_and_store_profile
+
+    task = asyncio.create_task(generate_and_store_profile(user_id))
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data[_DATA] = {}
 
@@ -146,6 +199,7 @@ async def ask_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     if query.data == _CALLBACK_DEBT_SIM:
         context.user_data[_DATA]["has_debt"] = True
+        _record_event(context, step="debt", response_type="answered", raw_value="sim")
         await query.edit_message_text(
             "Qual o valor total das suas dívidas?\n\n"
             "Manda só o número, sem R$ ou pontos. Ex: 5000",
@@ -153,6 +207,7 @@ async def ask_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ASK_DEBT_AMOUNT
     else:
         context.user_data[_DATA]["has_debt"] = False
+        _record_event(context, step="debt", response_type="answered", raw_value="não")
         await query.edit_message_text(
             "Ótimo! Sem dívidas, você já está um passo à frente. 👏"
         )
@@ -169,6 +224,9 @@ async def ask_debt_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ASK_DEBT_AMOUNT
 
     context.user_data[_DATA]["debt_amount"] = amount
+    _record_event(
+        context, step="debt_amount", response_type="answered", raw_value=update.message.text
+    )
     await update.message.reply_text("Entendido. Vamos focar em quitar isso! 💪")
     await _send_ask_essential_expense(update.message.reply_text)
     return ASK_ESSENTIAL_EXPENSE
@@ -187,6 +245,9 @@ async def ask_essential_expense(update: Update, context: ContextTypes.DEFAULT_TY
     text = update.message.text.strip().lower()
 
     if text in _DONT_KNOW_TOKENS:
+        _record_event(
+            context, step="essential_expense", response_type="dont_know", raw_value=update.message.text
+        )
         await update.message.reply_text(
             "Sem problema! Essa calculadora te ajuda a somar isso rapidinho:\n"
             f"{_CALCULADORA_URL}\n\n"
@@ -203,10 +264,14 @@ async def ask_essential_expense(update: Update, context: ContextTypes.DEFAULT_TY
         return ASK_ESSENTIAL_EXPENSE
 
     context.user_data[_DATA]["monthly_essential_expense"] = amount
+    _record_event(
+        context, step="essential_expense", response_type="answered", raw_value=update.message.text
+    )
     return await _after_essential_expense(update, context)
 
 
 async def ask_essential_expense_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    _record_event(context, step="essential_expense", response_type="skipped")
     return await _after_essential_expense(update, context)
 
 
@@ -233,6 +298,7 @@ async def ask_budget(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ASK_BUDGET
 
     context.user_data[_DATA]["monthly_budget"] = amount
+    _record_event(context, step="budget", response_type="answered", raw_value=update.message.text)
 
     # Quem tem dívida não passa pela pergunta de caixinha
     if context.user_data[_DATA].get("has_debt"):
@@ -261,6 +327,7 @@ async def ask_savings(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         savings = _parse_amount(text) or Decimal(0)
 
     context.user_data[_DATA]["savings_amount"] = savings
+    _record_event(context, step="savings", response_type="answered", raw_value=text)
 
     await update.message.reply_text(
         "Agora me conta: qual é a sua primeira meta?\n\n"
@@ -278,6 +345,7 @@ async def ask_goal(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return ASK_GOAL
 
     context.user_data[_DATA]["goal_name"] = goal
+    _record_event(context, step="goal", response_type="answered", raw_value=goal)
     await update.message.reply_text(
         f"'{goal}' — boa escolha! 🎯\n\n"
         f"Quanto custa essa meta por mês? (ex: 50 ou R$ 129,90)"
@@ -294,6 +362,9 @@ async def ask_goal_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ASK_GOAL_VALUE
 
     context.user_data[_DATA]["goal_value_monthly"] = amount
+    _record_event(
+        context, step="goal_value", response_type="answered", raw_value=update.message.text
+    )
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -328,6 +399,7 @@ async def ask_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         label = "⚖️ Moderado"
 
     context.user_data[_DATA]["risk_profile"] = profile
+    _record_event(context, step="profile", response_type="answered", raw_value=profile)
 
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("✅ Sim, tenho", callback_data=_CALLBACK_HAS_PORTFOLIO_SIM),
@@ -345,6 +417,8 @@ async def ask_profile_callback(update: Update, context: ContextTypes.DEFAULT_TYP
 async def ask_has_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
+
+    _record_event(context, step="has_portfolio", response_type="answered", raw_value=query.data)
 
     if query.data == _CALLBACK_HAS_PORTFOLIO_SIM:
         keyboard = InlineKeyboardMarkup([[
@@ -371,7 +445,8 @@ async def ask_knows_fii(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     query = update.callback_query
     await query.answer()
 
-    context.user_data[_DATA]["portfolio_tickers"] = []
+    context.user_data[_DATA]["portfolio_shares"] = {}
+    _record_event(context, step="knows_fii", response_type="answered", raw_value=query.data)
 
     if query.data == _CALLBACK_KNOWS_FII_NAO:
         await query.edit_message_text(
@@ -383,18 +458,20 @@ async def ask_knows_fii(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             parse_mode="Markdown",
         )
 
-    return await _finish_onboarding(update, context)
+    return await _finish_onboarding(update, context, error_state=ASK_KNOWS_FII)
 
 
 async def ask_portfolio_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    context.user_data[_DATA]["portfolio_tickers"] = []
-    return await _finish_onboarding(update, context)
+    context.user_data[_DATA]["portfolio_shares"] = {}
+    _record_event(context, step="portfolio", response_type="skipped")
+    return await _finish_onboarding(update, context, error_state=ASK_PORTFOLIO)
 
 
 async def ask_portfolio_skip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.callback_query.answer()
-    context.user_data[_DATA]["portfolio_tickers"] = []
-    return await _finish_onboarding(update, context)
+    context.user_data[_DATA]["portfolio_shares"] = {}
+    _record_event(context, step="portfolio", response_type="skipped")
+    return await _finish_onboarding(update, context, error_state=ASK_PORTFOLIO)
 
 
 async def ask_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -405,22 +482,57 @@ async def ask_portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         )
         return ASK_PORTFOLIO
 
-    context.user_data[_DATA]["portfolio_tickers"] = tickers
-    return await _finish_onboarding(update, context)
+    context.user_data[_DATA]["portfolio_tickers_pending"] = tickers
+    context.user_data[_DATA]["portfolio_shares"] = {}
+    _record_event(
+        context, step="portfolio", response_type="answered", raw_value=update.message.text
+    )
+    await update.message.reply_text(f"Quantas cotas de {tickers[0]} você tem?")
+    return ASK_PORTFOLIO_SHARES
 
 
-async def _finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def ask_portfolio_shares(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    data = context.user_data[_DATA]
+    pending: list[str] = data["portfolio_tickers_pending"]
+    current_ticker = pending[0]
+
+    shares = _parse_shares(update.message.text)
+    if shares is None:
+        await update.message.reply_text(
+            f"Não entendi. Manda só o número de cotas de {current_ticker}. Ex: 10"
+        )
+        return ASK_PORTFOLIO_SHARES
+
+    data["portfolio_shares"][current_ticker] = shares
+    pending.pop(0)
+
+    if pending:
+        await update.message.reply_text(f"Quantas cotas de {pending[0]} você tem?")
+        return ASK_PORTFOLIO_SHARES
+
+    data["portfolio_tickers_pending"] = []
+    return await _finish_onboarding(update, context, error_state=ASK_PORTFOLIO_SHARES)
+
+
+async def _finish_onboarding(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, error_state: int
+) -> int:
+    """
+    error_state: estado da conversa para onde voltar se `save_onboarding` falhar
+    (erro de banco, conexão etc). Nunca encerramos a conversa nesse caso — o
+    usuário mantém `context.user_data[_DATA]` intacto e pode tentar de novo.
+    """
     data = context.user_data[_DATA]
     # update pode vir de message (portfolio) ou callback_query (pular via comando)
     chat_id = update.effective_user.id
 
     has_debt: bool = data.get("has_debt", False)
-    portfolio_tickers: list[str] = data.get("portfolio_tickers", [])
+    portfolio_shares: dict[str, int] = data.get("portfolio_shares", {})
     monthly_essential_expense = data.get("monthly_essential_expense")
 
     if has_debt:
         stage = 0
-    elif portfolio_tickers:
+    elif portfolio_shares:
         stage = 3
     elif monthly_essential_expense is not None:
         stage = 1  # Estágio 0.5 — reserva de emergência
@@ -430,7 +542,7 @@ async def _finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE)
     try:
         async with AsyncSessionFactory() as session:
             repo = UserRepository(session)
-            await repo.save_onboarding(
+            user = await repo.save_onboarding(
                 chat_id=chat_id,
                 stage=stage,
                 monthly_budget=data["monthly_budget"],
@@ -439,17 +551,20 @@ async def _finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 savings_amount=data.get("savings_amount"),
                 goal_name=data["goal_name"],
                 goal_value_monthly=data["goal_value_monthly"],
-                portfolio_tickers=portfolio_tickers,
+                portfolio_shares=portfolio_shares,
                 monthly_essential_expense=monthly_essential_expense,
+                onboarding_events=data.get("events", []),
             )
     except Exception:
         logger.exception("Failed to save onboarding for chat_id=%s", chat_id)
-        msg = "Ops, tive um problema ao salvar seus dados. Tenta de novo com /start."
+        msg = "Ops, tive um problema ao salvar seus dados. Tenta de novo mandando sua última resposta."
         if update.message:
             await update.message.reply_text(msg)
         else:
             await update.callback_query.message.reply_text(msg)
-        return ConversationHandler.END
+        return error_state
+
+    _trigger_profile_generation(user.id)
 
     goal_name = data["goal_name"]
     goal_value = data["goal_value_monthly"]
@@ -564,6 +679,9 @@ def build_onboarding_handler() -> ConversationHandler:
                     pattern=f"^{_CALLBACK_PORTFOLIO_SKIP}$",
                 ),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, ask_portfolio),
+            ],
+            ASK_PORTFOLIO_SHARES: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, ask_portfolio_shares),
             ],
             ASK_KNOWS_FII: [
                 CallbackQueryHandler(
