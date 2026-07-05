@@ -28,7 +28,7 @@ from telegram.ext import (
     filters,
 )
 
-from app.bot.onboarding import CALLBACK_COMECAR_AGORA
+from app.bot.onboarding import CALLBACK_COMECAR_AGORA, _trigger_profile_generation
 from app.core.database import AsyncSessionFactory
 from app.repositories.user_repository import UserRepository
 
@@ -68,6 +68,32 @@ _STAGE_LABELS = {0: "0", 1: "0.5", 2: "1", 3: "2"}
 
 def _stage_label(stage: int) -> str:
     return _STAGE_LABELS.get(stage, str(stage))
+
+
+# nomes de dia em português -> weekday (0=segunda ... 6=domingo, convenção datetime.weekday())
+_WEEKDAY_NAMES = {
+    "segunda": 0,
+    "terca": 1,
+    "terça": 1,
+    "quarta": 2,
+    "quinta": 3,
+    "sexta": 4,
+    "sabado": 5,
+    "sábado": 5,
+    "domingo": 6,
+}
+_WEEKDAY_LABELS = {
+    0: "segunda", 1: "terça", 2: "quarta", 3: "quinta", 4: "sexta", 5: "sábado", 6: "domingo",
+}
+
+
+def _parse_weekday(text: str) -> int | None:
+    """Aceita '0'-'6' ou nome do dia em português (com ou sem acento). None se inválido."""
+    cleaned = text.strip().lower()
+    if cleaned.isdigit():
+        value = int(cleaned)
+        return value if 0 <= value <= 6 else None
+    return _WEEKDAY_NAMES.get(cleaned)
 
 
 async def cmd_atualizar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -171,6 +197,7 @@ async def ask_atualizar_valor(update: Update, context: ContextTypes.DEFAULT_TYPE
                 if user.monthly_essential_expense is not None:
                     target_amount = user.monthly_essential_expense * 5
                     await repo.promote_to_emergency_fund(user.id, target_amount)
+                    _trigger_profile_generation(user.id)
                     promotion_text = (
                         "🎉 Parabéns! Você quitou a dívida!\n\n"
                         "Você avançou para o *Estágio 0.5: Reserva de emergência*.\n"
@@ -180,6 +207,7 @@ async def ask_atualizar_valor(update: Update, context: ContextTypes.DEFAULT_TYPE
                     new_stage = 1
                 else:
                     await repo.promote_stage(user.id, new_stage=2)
+                    _trigger_profile_generation(user.id)
                     promotion_text = (
                         "🎉 Parabéns! Você quitou a dívida!\n\n"
                         "Você avançou para o *Estágio 1: Construindo a caixinha*.\n"
@@ -296,6 +324,7 @@ async def cmd_reserva(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         if fund.current_amount >= fund.target_amount:
             await repo.complete_emergency_fund(fund.id)
             await repo.promote_stage(user.id, new_stage=2)
+            _trigger_profile_generation(user.id)
             await update.message.reply_text(
                 f"🎉 Reserva completa! Você tem {_fmt_reais(fund.current_amount)} guardados "
                 "— 5 meses de segurança pra qualquer imprevisto.\n\n"
@@ -318,6 +347,61 @@ async def cmd_reserva(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 amount,
                 fund.current_amount,
             )
+
+
+async def cmd_diadigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler de /diadigest <dia> — define o dia da semana do digest semanal."""
+    chat_id = update.effective_user.id
+    args = context.args or []
+
+    weekday = _parse_weekday(args[0]) if args else None
+    if weekday is None:
+        await update.message.reply_text(
+            "Manda o dia da semana. Ex: /diadigest quarta ou /diadigest 2\n\n"
+            "Dias aceitos: segunda, terca, quarta, quinta, sexta, sabado, domingo (0-6)."
+        )
+        return
+
+    async with AsyncSessionFactory() as session:
+        repo = UserRepository(session)
+        user = await repo.get_by_chat_id(chat_id)
+
+        if user is None or not user.onboarding_complete:
+            await update.message.reply_text(
+                "Você ainda não completou o onboarding. Manda /start para começar."
+            )
+            return
+
+        await repo.set_digest_weekday(user.id, weekday)
+        await update.message.reply_text(
+            f"✅ Combinado! Seu digest semanal agora chega toda {_WEEKDAY_LABELS[weekday]}."
+        )
+        logger.info("cmd_diadigest: chat_id=%s set digest_weekday=%d", chat_id, weekday)
+
+
+async def cmd_testardigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Handler "escondido" de /testardigest — dispara o digest semanal imediatamente,
+    só para quem chamou o comando. Não aparece no /ajuda de propósito.
+    """
+    from app.scheduler.weekly_runner import build_digest_message_for_user
+
+    chat_id = update.effective_user.id
+
+    async with AsyncSessionFactory() as session:
+        repo = UserRepository(session)
+        user = await repo.get_by_chat_id(chat_id)
+
+        if user is None or not user.onboarding_complete:
+            await update.message.reply_text(
+                "Você ainda não completou o onboarding. Manda /start para começar."
+            )
+            return
+
+        message = await build_digest_message_for_user(repo, user)
+
+    await update.message.reply_text(message, parse_mode="Markdown")
+    logger.info("cmd_testardigest: manual digest triggered by chat_id=%s", chat_id)
 
 
 async def cmd_pausar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -365,7 +449,8 @@ async def cmd_retomar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         await repo.set_paused(user.id, paused=False)
         await update.message.reply_text(
-            "▶️ Envios semanais retomados. Você volta a receber o digest toda segunda!"
+            f"▶️ Envios semanais retomados. Você volta a receber o digest toda "
+            f"{_WEEKDAY_LABELS[user.digest_weekday]}!"
         )
         logger.info("cmd_retomar: chat_id=%s resumed", chat_id)
 
@@ -385,6 +470,7 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/start — inicia ou refaz o onboarding\n"
         "/atualizar — registra pagamento de dívida (estágio 0) ou dinheiro guardado (estágio 1)\n"
         "/reserva <valor> — atualiza sua reserva de emergência (estágio 0.5)\n"
+        "/diadigest <dia> — escolhe o dia da semana do seu digest (ex: quarta)\n"
         "/pausar — pausa os envios semanais\n"
         "/retomar — retoma os envios semanais\n"
         "/reset — apaga seu perfil e começa do zero\n"
@@ -456,6 +542,7 @@ async def callback_stage_check(update: Update, context: ContextTypes.DEFAULT_TYP
 
         if data == _CALLBACK_SIM:
             await repo.promote_stage(user.id, new_stage=3)
+            _trigger_profile_generation(user.id)
             await query.edit_message_text(
                 "🚀 Incrível! Você chegou no *Estágio 2: Investindo em FIIs*!\n\n"
                 "A partir de agora você recebe análise semanal da watchlist de FIIs "
@@ -483,6 +570,8 @@ def build_command_handlers() -> list:
         CommandHandler("pausar", cmd_pausar),
         CommandHandler("retomar", cmd_retomar),
         CommandHandler("reserva", cmd_reserva),
+        CommandHandler("diadigest", cmd_diadigest),
+        CommandHandler("testardigest", cmd_testardigest),
         CommandHandler("ajuda", cmd_ajuda),
         CommandHandler("reset", cmd_reset),
         CallbackQueryHandler(callback_stage_check, pattern=f"^({_CALLBACK_SIM}|{_CALLBACK_NAO})$"),

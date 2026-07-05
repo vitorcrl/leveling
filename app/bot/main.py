@@ -4,7 +4,8 @@ Invocado via: python -m app.bot.main
 
 Sobe três coisas no mesmo processo asyncio:
   1. Bot Telegram com polling (onboarding + comandos)
-  2. Weekly digest semanal por usuário (toda segunda às 8h)
+  2. Weekly digest semanal por usuário — roda todo dia às 8h, mas cada usuário
+     só recebe no seu próprio digest_weekday (ver /diadigest e weekly_runner.py)
   3. Pipeline de FIIs para usuários stage-2 (todo sábado às 10h)
 
 Sem dependência de APScheduler ou Celery — asyncio puro com loop de 60s.
@@ -18,6 +19,7 @@ from zoneinfo import ZoneInfo
 from telegram.ext import Application, MessageHandler, filters
 
 from app.adapters.delivery.telegram_adapter import TelegramAdapter
+from app.adapters.narrators.journey_narrator import ClaudeJourneyNarrator
 from app.bot.commands import build_atualizar_handler, build_command_handlers, cmd_unknown_message
 from app.bot.onboarding import build_onboarding_handler
 from app.core.config import get_settings
@@ -26,12 +28,20 @@ from app.scheduler.weekly_runner import send_weekly_digest
 
 logger = logging.getLogger(__name__)
 
-_WEEKLY_DIGEST_WEEKDAY = 0   # segunda-feira
-_WEEKLY_DIGEST_HOUR = 10     # horário de Brasília
+_WEEKLY_DIGEST_HOUR = 10     # horário de Brasília — dispara todo dia, filtro de dia é por usuário
 _FII_PIPELINE_WEEKDAY = 5    # sábado
 _FII_PIPELINE_HOUR = 10      # horário de Brasília
 
 _BRT = ZoneInfo("America/Sao_Paulo")
+
+
+def _should_run_at_hour(hour: int, last_run: datetime | None) -> bool:
+    now = datetime.now(_BRT)
+    if now.hour != hour:
+        return False
+    if last_run is None:
+        return True
+    return (now - last_run).total_seconds() > 3600
 
 
 def _should_run(weekday: int, hour: int, last_run: datetime | None) -> bool:
@@ -45,6 +55,7 @@ def _should_run(weekday: int, hour: int, last_run: datetime | None) -> bool:
 
 async def _scheduler_loop(bot) -> None:
     delivery = TelegramAdapter(bot)
+    narrator = ClaudeJourneyNarrator()
     last_weekly: datetime | None = None
     last_fii: datetime | None = None
 
@@ -52,10 +63,12 @@ async def _scheduler_loop(bot) -> None:
         await asyncio.sleep(60)
         now = datetime.now(_BRT)
 
-        if _should_run(_WEEKLY_DIGEST_WEEKDAY, _WEEKLY_DIGEST_HOUR, last_weekly):
-            logger.info("scheduler: firing weekly digest")
+        if _should_run_at_hour(_WEEKLY_DIGEST_HOUR, last_weekly):
+            logger.info("scheduler: firing weekly digest (weekday=%s)", now.weekday())
             try:
-                result = await send_weekly_digest(delivery, bot=bot)
+                result = await send_weekly_digest(
+                    delivery, bot=bot, weekday=now.weekday(), narrator=narrator
+                )
                 logger.info("scheduler: weekly digest done — %s", result)
                 last_weekly = now
             except Exception:

@@ -11,17 +11,33 @@ from app.bot.commands import (
     _CALLBACK_ATUALIZAR_DIVIDA,
     _CALLBACK_ATUALIZAR_SAVINGS,
     _parse_amount,
+    _parse_weekday,
     ask_atualizar_tipo,
     ask_atualizar_valor,
+    build_command_handlers,
+    cmd_ajuda,
     cmd_atualizar,
+    cmd_diadigest,
     cmd_pausar,
     cmd_reserva,
     cmd_retomar,
+    cmd_testardigest,
     cmd_unknown_message,
     callback_stage_check,
 )
 from app.bot.onboarding import CALLBACK_COMECAR_AGORA
 from telegram.ext import ConversationHandler
+
+
+@pytest.fixture(autouse=True)
+def _no_profile_generation():
+    """
+    Evita disparar asyncio.create_task real nos testes — sem isso, a tarefa em
+    background (ver profile_service) sobrevive ao fim do event loop do teste e
+    gera RuntimeWarning em testes seguintes quando é coletada pelo GC.
+    """
+    with patch("app.bot.commands._trigger_profile_generation"):
+        yield
 
 
 def make_update(text: str = "", user_id: int = 42, args: list[str] | None = None) -> MagicMock:
@@ -43,6 +59,7 @@ def make_user(
     onboarding_complete: bool = True,
     paused: bool = False,
     monthly_essential_expense: Decimal | None = None,
+    digest_weekday: int = 0,
 ) -> MagicMock:
     user = MagicMock()
     user.id = "uuid-1"
@@ -50,6 +67,7 @@ def make_user(
     user.onboarding_complete = onboarding_complete
     user.paused = paused
     user.monthly_essential_expense = monthly_essential_expense
+    user.digest_weekday = digest_weekday
     return user
 
 
@@ -645,6 +663,166 @@ class TestCmdReserva:
         mock_repo.promote_stage.assert_called_once_with(user.id, new_stage=2)
         msg = update.message.reply_text.call_args.args[0]
         assert "Reserva completa" in msg
+
+
+# ---------------------------------------------------------------------------
+# cmd_diadigest
+# ---------------------------------------------------------------------------
+
+class TestCmdDiaDigest:
+    def _patch(self, user):
+        mock_factory = MagicMock()
+        mock_session = AsyncMock()
+        mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_repo = AsyncMock()
+        mock_repo.get_by_chat_id = AsyncMock(return_value=user)
+        mock_repo.set_digest_weekday = AsyncMock()
+        return mock_factory, mock_repo
+
+    async def test_no_args_asks_for_day(self):
+        update = make_update()
+        ctx = make_context(args=[])
+        await cmd_diadigest(update, ctx)
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/diadigest" in msg
+
+    async def test_invalid_day_asks_again(self):
+        update = make_update()
+        ctx = make_context(args=["invalido"])
+        await cmd_diadigest(update, ctx)
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/diadigest" in msg
+
+    async def test_valid_day_name_persists(self):
+        update = make_update()
+        ctx = make_context(args=["quarta"])
+        user = make_user()
+        mock_factory, mock_repo = self._patch(user)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_diadigest(update, ctx)
+
+        mock_repo.set_digest_weekday.assert_called_once_with(user.id, 2)
+        msg = update.message.reply_text.call_args.args[0]
+        assert "quarta" in msg
+
+    async def test_valid_numeric_day_persists(self):
+        update = make_update()
+        ctx = make_context(args=["5"])
+        user = make_user()
+        mock_factory, mock_repo = self._patch(user)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_diadigest(update, ctx)
+
+        mock_repo.set_digest_weekday.assert_called_once_with(user.id, 5)
+
+    async def test_user_not_found_replies_with_start_hint(self):
+        update = make_update()
+        ctx = make_context(args=["quarta"])
+        mock_factory, mock_repo = self._patch(user=None)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_diadigest(update, ctx)
+
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/start" in msg
+
+
+class TestParseWeekday:
+    def test_accepts_digit(self):
+        assert _parse_weekday("3") == 3
+
+    def test_accepts_day_name(self):
+        assert _parse_weekday("segunda") == 0
+        assert _parse_weekday("domingo") == 6
+
+    def test_accepts_accented_and_unaccented(self):
+        assert _parse_weekday("sabado") == 5
+        assert _parse_weekday("sábado") == 5
+
+    def test_out_of_range_digit_returns_none(self):
+        assert _parse_weekday("7") is None
+        assert _parse_weekday("-1") is None
+
+    def test_unknown_word_returns_none(self):
+        assert _parse_weekday("blah") is None
+
+
+# ---------------------------------------------------------------------------
+# cmd_testardigest
+# ---------------------------------------------------------------------------
+
+class TestCmdTestarDigest:
+    def _patch(self, user):
+        mock_factory = MagicMock()
+        mock_session = AsyncMock()
+        mock_factory.return_value.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
+        mock_repo = AsyncMock()
+        mock_repo.get_by_chat_id = AsyncMock(return_value=user)
+        return mock_factory, mock_repo
+
+    async def test_sends_digest_only_to_caller(self):
+        update = make_update()
+        ctx = make_context()
+        user = make_user(stage=0)
+        mock_factory, mock_repo = self._patch(user)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                with patch(
+                    "app.scheduler.weekly_runner.build_digest_message_for_user",
+                    AsyncMock(return_value="mensagem de teste"),
+                ) as mock_build:
+                    await cmd_testardigest(update, ctx)
+
+        mock_build.assert_called_once_with(mock_repo, user)
+        update.message.reply_text.assert_called_once_with(
+            "mensagem de teste", parse_mode="Markdown"
+        )
+
+    async def test_user_not_found_replies_with_start_hint(self):
+        update = make_update()
+        ctx = make_context()
+        mock_factory, mock_repo = self._patch(user=None)
+
+        with patch("app.core.database.AsyncSessionFactory", mock_factory):
+            with patch("app.bot.commands.UserRepository", return_value=mock_repo):
+                await cmd_testardigest(update, ctx)
+
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/start" in msg
+
+
+# ---------------------------------------------------------------------------
+# cmd_ajuda / build_command_handlers
+# ---------------------------------------------------------------------------
+
+class TestCmdAjuda:
+    async def test_mentions_diadigest_but_not_testardigest(self):
+        update = make_update()
+        await cmd_ajuda(update, MagicMock())
+        msg = update.message.reply_text.call_args.args[0]
+        assert "/diadigest" in msg
+        assert "/testardigest" not in msg
+
+
+class TestBuildCommandHandlers:
+    def test_registers_diadigest_and_testardigest(self):
+        handlers = build_command_handlers()
+        commands = {
+            cmd
+            for handler in handlers
+            if hasattr(handler, "commands")
+            for cmd in handler.commands
+        }
+        assert "diadigest" in commands
+        assert "testardigest" in commands
 
 
 # ---------------------------------------------------------------------------

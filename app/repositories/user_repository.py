@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models_user import (
+    OnboardingEvent,
     User,
     UserDebt,
     UserDividend,
@@ -46,8 +47,9 @@ class UserRepository:
         savings_amount: Decimal | None,
         goal_name: str,
         goal_value_monthly: Decimal,
-        portfolio_tickers: list[str],
+        portfolio_shares: dict[str, int],
         monthly_essential_expense: Decimal | None = None,
+        onboarding_events: list[dict] | None = None,
     ) -> User:
         """
         Persiste todos os dados do onboarding em uma única transação.
@@ -77,11 +79,11 @@ class UserRepository:
         )
         self._session.add(goal)
 
-        for ticker in portfolio_tickers:
+        for ticker, shares in portfolio_shares.items():
             position = UserPortfolio(
                 user_id=user.id,
                 ticker=ticker.upper(),
-                shares=0,
+                shares=shares,
             )
             self._session.add(position)
 
@@ -92,6 +94,16 @@ class UserRepository:
                 current_amount=Decimal(0),
             )
             self._session.add(emergency_fund)
+
+        for event in onboarding_events or []:
+            self._session.add(
+                OnboardingEvent(
+                    user_id=user.id,
+                    step=event["step"],
+                    response_type=event["response_type"],
+                    raw_value=event.get("raw_value"),
+                )
+            )
 
         await self._session.commit()
         return user
@@ -111,6 +123,24 @@ class UserRepository:
         result = await self._session.execute(select(User).where(User.id == user_id))
         user = result.scalar_one()
         user.paused = paused
+        await self._session.commit()
+        return user
+
+    async def set_digest_weekday(self, user_id, weekday: int) -> User:
+        """Define o dia da semana (0=segunda ... 6=domingo) em que o usuário recebe o digest."""
+        if not 0 <= weekday <= 6:
+            raise ValueError(f"weekday deve estar entre 0 e 6, recebido: {weekday}")
+        result = await self._session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one()
+        user.digest_weekday = weekday
+        await self._session.commit()
+        return user
+
+    async def update_profile_summary(self, user_id, summary: dict | None) -> User:
+        """Persiste o perfil sintetizado por IA (ver app/services/profile_service.py)."""
+        result = await self._session.execute(select(User).where(User.id == user_id))
+        user = result.scalar_one()
+        user.user_profile_summary = summary
         await self._session.commit()
         return user
 
@@ -231,7 +261,14 @@ class UserRepository:
         if user is None:
             return False
 
-        for model in (UserDividend, UserPortfolio, UserDebt, UserGoal, UserEmergencyFund):
+        for model in (
+            UserDividend,
+            UserPortfolio,
+            UserDebt,
+            UserGoal,
+            UserEmergencyFund,
+            OnboardingEvent,
+        ):
             await self._session.execute(
                 sql_delete(model).where(model.user_id == user.id)
             )
@@ -247,3 +284,12 @@ class UserRepository:
             .limit(1)
         )
         return result.scalar_one_or_none()
+
+    async def get_onboarding_events(self, user_id) -> list[OnboardingEvent]:
+        """Lê os eventos de onboarding de um usuário — consumido só por profile_service."""
+        result = await self._session.execute(
+            select(OnboardingEvent)
+            .where(OnboardingEvent.user_id == user_id)
+            .order_by(OnboardingEvent.created_at.asc())
+        )
+        return list(result.scalars().all())

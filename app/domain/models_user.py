@@ -15,7 +15,7 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
 )
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from app.domain.base import Base
 
@@ -42,6 +42,15 @@ class User(Base):
         é enviado a todo usuário com onboarding completo e paused=False, independente
         de última interação (decisão de produto de 2026-07-02: sem pausa automática
         por ausência).
+    digest_weekday: dia da semana escolhido pelo usuário para receber o digest
+        semanal — 0=segunda ... 6=domingo (mesma convenção de `datetime.weekday()`).
+        Default 0 (segunda) preserva o comportamento anterior à introdução do
+        comando /diadigest.
+    user_profile_summary: perfil sintetizado por IA a partir das respostas do
+        onboarding (incluindo o que foi pulado/"não sei") — usado pelo
+        ClaudeJourneyNarrator para personalizar o digest semanal. NULL até a
+        primeira geração (ou se a geração falhar). Regenerado em eventos de
+        promoção de stage e conquista de meta, nunca a cada digest.
     """
 
     __tablename__ = "users"
@@ -57,6 +66,8 @@ class User(Base):
     savings_amount = Column(Numeric(12, 2), nullable=True)   # dinheiro guardado declarado no onboarding
     last_interaction_at = Column(DateTime, nullable=True)
     stage_check_sent_at = Column(DateTime, nullable=True)  # última vez que perguntamos sobre promoção de stage
+    digest_weekday = Column(SmallInteger, nullable=False, default=0)  # 0=segunda ... 6=domingo
+    user_profile_summary = Column(JSONB, nullable=True)  # perfil sintetizado por IA (ver ClaudeJourneyNarrator)
     created_at = Column(DateTime, default=_utc_now, nullable=False)
     updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
 
@@ -176,3 +187,25 @@ class UserEmergencyFund(Base):
     completed_at = Column(DateTime, nullable=True)  # preenchido quando current >= target
     created_at = Column(DateTime, default=_utc_now, nullable=False)
     updated_at = Column(DateTime, default=_utc_now, onupdate=_utc_now, nullable=False)
+
+
+class OnboardingEvent(Base):
+    """
+    Log append-only de cada etapa do onboarding, respondida ou não.
+
+    Existe só para analytics de produto (funil de conversão por etapa,
+    taxa de "pulou"/"não sei" por pergunta) — não é lido por nenhuma
+    lógica de negócio. Nunca é atualizado, só inserido.
+    """
+
+    __tablename__ = "onboarding_events"
+    __table_args__ = (
+        Index("ix_onboarding_events_user_id", "user_id"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    step = Column(String(40), nullable=False)     # ver lista de steps em onboarding.py
+    response_type = Column(String(20), nullable=False)  # 'answered' | 'skipped' | 'dont_know'
+    raw_value = Column(String(200), nullable=True)  # texto original da resposta, se houver
+    created_at = Column(DateTime, default=_utc_now, nullable=False)
