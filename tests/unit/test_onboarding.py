@@ -193,12 +193,13 @@ class TestAskDebt:
         assert result == ASK_DEBT_AMOUNT
         assert ctx.user_data[_DATA]["has_debt"] is True
 
-    async def test_nao_stores_has_debt_false_and_returns_ask_essential_expense(self):
+    async def test_nao_stores_has_debt_false_and_skips_essential_expense_to_budget(self):
+    
         update = make_callback_update(_CALLBACK_DEBT_NAO)
         update.callback_query.message.reply_text = AsyncMock()
         ctx = make_context()
         result = await ask_debt(update, ctx)
-        assert result == ASK_ESSENTIAL_EXPENSE
+        assert result == ASK_BUDGET
         assert ctx.user_data[_DATA]["has_debt"] is False
 
     async def test_start_sends_inline_keyboard(self):
@@ -214,10 +215,12 @@ class TestAskDebt:
 
 class TestAskDebtAmount:
     async def test_valid_amount_stored_and_proceeds(self):
+        # Estágio 0.5 (reserva de emergência) temporariamente fora do onboarding —
+        # pula direto para ASK_BUDGET em vez de passar por ASK_ESSENTIAL_EXPENSE.
         update = make_update("5000")
         ctx = make_context({"has_debt": True})
         result = await ask_debt_amount(update, ctx)
-        assert result == ASK_ESSENTIAL_EXPENSE
+        assert result == ASK_BUDGET
         assert ctx.user_data[_DATA]["debt_amount"] == Decimal("5000")
 
     async def test_invalid_amount_stays_on_same_state(self):
