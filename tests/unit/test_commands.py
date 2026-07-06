@@ -765,26 +765,42 @@ class TestCmdTestarDigest:
         mock_factory.return_value.__aexit__ = AsyncMock(return_value=False)
         mock_repo = AsyncMock()
         mock_repo.get_by_chat_id = AsyncMock(return_value=user)
+        # build_user_information consulta esses métodos — retornos vazios/None
+        # para não quebrar a formatação do dossiê nos testes que não testam
+        # o conteúdo dele em si.
+        mock_repo.get_active_debt = AsyncMock(return_value=None)
+        mock_repo.get_active_emergency_fund = AsyncMock(return_value=None)
+        mock_repo.get_active_goal = AsyncMock(return_value=None)
+        mock_repo.get_portfolio = AsyncMock(return_value=[])
+        mock_repo.get_recent_dividends = AsyncMock(return_value=[])
+        mock_repo.get_onboarding_events = AsyncMock(return_value=[])
         return mock_factory, mock_repo
 
-    async def test_sends_digest_only_to_caller(self):
+    async def test_sends_digest_only_to_caller(self, tmp_path):
         update = make_update()
         ctx = make_context()
         user = make_user(stage=0)
+        user.monthly_budget = Decimal("50")
+        user.risk_profile = "conservador"
         mock_factory, mock_repo = self._patch(user)
 
         with patch("app.core.database.AsyncSessionFactory", mock_factory):
             with patch("app.bot.commands.UserRepository", return_value=mock_repo):
-                with patch(
-                    "app.scheduler.weekly_runner.build_digest_message_for_user",
-                    AsyncMock(return_value="mensagem de teste"),
-                ) as mock_build:
-                    await cmd_testardigest(update, ctx)
+                with patch("app.bot.commands._TEST_DOSSIE_DIR", str(tmp_path)):
+                    with patch(
+                        "app.scheduler.weekly_runner.build_digest_message_for_user",
+                        AsyncMock(return_value="mensagem de teste"),
+                    ) as mock_build:
+                        await cmd_testardigest(update, ctx)
 
         mock_build.assert_called_once_with(mock_repo, user)
-        update.message.reply_text.assert_called_once_with(
-            "mensagem de teste", parse_mode="Markdown"
-        )
+        first_call = update.message.reply_text.call_args_list[0]
+        assert first_call.args[0] == "mensagem de teste"
+        assert first_call.kwargs == {"parse_mode": "Markdown"}
+
+        second_call = update.message.reply_text.call_args_list[1]
+        assert "Dossiê salvo em" in second_call.args[0]
+        assert list(tmp_path.iterdir()), "esperava um arquivo de dossiê salvo em tmp_path"
 
     async def test_user_not_found_replies_with_start_hint(self):
         update = make_update()

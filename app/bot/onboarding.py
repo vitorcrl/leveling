@@ -211,8 +211,12 @@ async def ask_debt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await query.edit_message_text(
             "Ótimo! Sem dívidas, você já está um passo à frente. 👏"
         )
-        await _send_ask_essential_expense(query.message.reply_text)
-        return ASK_ESSENTIAL_EXPENSE
+        # Estágio 0.5 (reserva de emergência) temporariamente fora do onboarding —
+        # MVP simplificado para 3 passos (dívida → caixinha → FIIs). O fluxo de
+        # ASK_ESSENTIAL_EXPENSE continua implementado e funcional (ver
+        # _send_ask_essential_expense, ask_essential_expense, /reserva em
+        # commands.py) para quando reativarmos. Só não é mais perguntado aqui.
+        return await _after_essential_expense(update, context)
 
 
 async def ask_debt_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -228,10 +232,13 @@ async def ask_debt_amount(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         context, step="debt_amount", response_type="answered", raw_value=update.message.text
     )
     await update.message.reply_text("Entendido. Vamos focar em quitar isso! 💪")
-    await _send_ask_essential_expense(update.message.reply_text)
-    return ASK_ESSENTIAL_EXPENSE
+    # Estágio 0.5 (reserva de emergência) temporariamente fora do onboarding —
+    # ver comentário equivalente em ask_debt.
+    return await _after_essential_expense(update, context)
 
 
+# Não chamada no fluxo ativo hoje (Estágio 0.5 temporariamente desligado do
+# onboarding — ver comentário em ask_debt). Mantida para reativação futura.
 async def _send_ask_essential_expense(reply) -> None:
     await reply(
         "Quanto você gasta por mês com o essencial — aluguel, contas, mercado?\n"
@@ -276,13 +283,17 @@ async def ask_essential_expense_skip(update: Update, context: ContextTypes.DEFAU
 
 
 async def _after_essential_expense(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # update pode vir de message (fluxo normal) ou callback_query (chamado
+    # direto por ask_debt, quando o usuário não tem dívida — ver comentário lá).
+    reply = update.message.reply_text if update.message else update.callback_query.message.reply_text
+
     if context.user_data[_DATA].get("has_debt"):
-        await update.message.reply_text(
+        await reply(
             "Quanto você consegue separar por mês para pagar a dívida?\n"
             "Manda só o número. Ex: 500"
         )
     else:
-        await update.message.reply_text(
+        await reply(
             "Quanto você consegue guardar por mês?\n"
             "Manda só o número. Ex: 500"
         )

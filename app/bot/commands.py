@@ -16,6 +16,7 @@ callback: stage_check_sim / stage_check_nao — resposta ao botão inline de pro
 
 import logging
 import re
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -379,12 +380,25 @@ async def cmd_diadigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         logger.info("cmd_diadigest: chat_id=%s set digest_weekday=%d", chat_id, weekday)
 
 
+_TEST_DOSSIE_DIR = "tmp/test_dossies"
+
+
 async def cmd_testardigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
     Handler "escondido" de /testardigest — dispara o digest semanal imediatamente,
     só para quem chamou o comando. Não aparece no /ajuda de propósito.
+
+    MODO DE TESTE (sem ANTHROPIC_API_KEY ainda configurada): além de mandar a
+    mensagem determinística de sempre, monta o dossiê completo do usuário
+    (build_user_information) e SALVA EM ARQUIVO em vez de chamar a API —
+    o arquivo é para colar manualmente no Claude.ai e validar o prompt antes
+    de conectar a chamada de verdade. Isso NÃO roda assim em produção; é só
+    para este teste manual.
     """
+    import os
+
     from app.scheduler.weekly_runner import build_digest_message_for_user
+    from app.services.ai_context import build_user_information
 
     chat_id = update.effective_user.id
 
@@ -399,9 +413,20 @@ async def cmd_testardigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             return
 
         message = await build_digest_message_for_user(repo, user)
+        dossie = await build_user_information(repo, user)
+
+    os.makedirs(_TEST_DOSSIE_DIR, exist_ok=True)
+    filename = f"{_TEST_DOSSIE_DIR}/dossie_{chat_id}_{int(datetime.now().timestamp())}.txt"
+    with open(filename, "w", encoding="utf-8") as f:
+        f.write(dossie)
 
     await update.message.reply_text(message, parse_mode="Markdown")
-    logger.info("cmd_testardigest: manual digest triggered by chat_id=%s", chat_id)
+    await update.message.reply_text(f"📄 Dossiê salvo em: {filename}")
+    logger.info(
+        "cmd_testardigest: manual digest triggered by chat_id=%s, dossie saved to %s",
+        chat_id,
+        filename,
+    )
 
 
 async def cmd_pausar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

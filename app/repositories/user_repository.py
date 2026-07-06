@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -293,3 +293,62 @@ class UserRepository:
             .order_by(OnboardingEvent.created_at.asc())
         )
         return list(result.scalars().all())
+
+    async def get_portfolio(self, user_id) -> list[UserPortfolio]:
+        """Lê a carteira de FIIs autodeclarada do usuário — consumido por ai_context."""
+        result = await self._session.execute(
+            select(UserPortfolio)
+            .where(UserPortfolio.user_id == user_id)
+            .order_by(UserPortfolio.ticker.asc())
+        )
+        return list(result.scalars().all())
+
+    async def get_recent_dividends(self, user_id, since: date) -> list[UserDividend]:
+        """Lê dividendos informados pelo usuário desde `since` — consumido por ai_context."""
+        result = await self._session.execute(
+            select(UserDividend)
+            .where(UserDividend.user_id == user_id, UserDividend.received_date >= since)
+            .order_by(UserDividend.received_date.desc())
+        )
+        return list(result.scalars().all())
+
+    async def get_portfolio_position(self, user_id, ticker: str) -> UserPortfolio | None:
+        """
+        Busca a posição do usuário num ticker específico. Sem chamador hoje —
+        preparado para o cálculo automático de dividendo via brapi.dev
+        (precisa saber quantas cotas o usuário tem pra multiplicar pelo
+        provento por cota).
+        """
+        result = await self._session.execute(
+            select(UserPortfolio).where(
+                UserPortfolio.user_id == user_id, UserPortfolio.ticker == ticker.upper()
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def add_dividend(
+        self,
+        user_id,
+        *,
+        ticker: str,
+        amount_per_share: Decimal,
+        shares_at_time: int,
+        received_date: date,
+    ) -> UserDividend:
+        """
+        Registra um dividendo do usuário. Sem chamador hoje — preparado para
+        o cálculo automático de dividendo via brapi.dev (ver
+        get_portfolio_position); o comando manual /dividendo foi revertido.
+        """
+        total_received = amount_per_share * shares_at_time
+        dividend = UserDividend(
+            user_id=user_id,
+            ticker=ticker.upper(),
+            received_date=received_date,
+            amount_per_share=amount_per_share,
+            shares_at_time=shares_at_time,
+            total_received=total_received,
+        )
+        self._session.add(dividend)
+        await self._session.commit()
+        return dividend
