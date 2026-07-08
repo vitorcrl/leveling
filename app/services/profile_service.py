@@ -13,7 +13,9 @@ import logging
 import anthropic
 
 from app.core.config import get_settings
-from app.domain.models_user import OnboardingEvent, User, UserGoal
+from app.domain.models_user import User
+from app.repositories.user_repository import UserRepository
+from app.services.ai_context import build_user_information
 
 logger = logging.getLogger(__name__)
 
