@@ -51,3 +51,18 @@ def suggest_fiis(risk_profile: str, n: int = 3) -> list[FII]:
 
     sample = random.sample(eligible, min(n, len(eligible)))
     return [FII(ticker=d["ticker"], nome=d["nome"], tipo=d["tipo"]) for d in sample]
+
+
+def get_fii_info(ticker: str) -> FII | None:
+    """
+    Busca um ticker específico no catálogo curado — usado para enriquecer a
+    carteira do usuário com tipo/nome (ver ai_context.py). Retorna None se o
+    ticker não estiver no catálogo (usuário pode ter FIIs fora da lista curada).
+    """
+    with _DATA_FILE.open(encoding="utf-8") as f:
+        raw = json.load(f)
+
+    for d in raw:
+        if d["ticker"] == ticker.upper():
+            return FII(ticker=d["ticker"], nome=d["nome"], tipo=d["tipo"])
+    return None

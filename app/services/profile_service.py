@@ -13,7 +13,9 @@ import logging
 import anthropic
 
 from app.core.config import get_settings
-from app.domain.models_user import OnboardingEvent, User, UserGoal
+from app.domain.models_user import User
+from app.repositories.user_repository import UserRepository
+from app.services.ai_context import build_user_information
 
 logger = logging.getLogger(__name__)
 
@@ -49,36 +51,21 @@ class _LazyClient:
 _lazy_client = _LazyClient()
 
 
-def _build_user_prompt(user: User, goal: UserGoal | None, events: list[OnboardingEvent]) -> str:
-    lines = [
-        f"Stage atual: {user.stage}",
-        f"Aporte mensal: {user.monthly_budget}",
-        f"Perfil de risco: {user.risk_profile or 'não informado'}",
-        f"Gasto essencial informado: {user.monthly_essential_expense or 'não informado'}",
-    ]
-    if goal:
-        lines.append(f"Meta ativa: {goal.name} (R$ {goal.goal_value_monthly}/mês)")
-
-    lines.append("\nRespostas do onboarding:")
-    for event in events:
-        lines.append(f"- {event.step}: {event.response_type} (valor: {event.raw_value or '-'})")
-
-    return "\n".join(lines)
-
-
 async def generate_profile_summary(
     user: User,
-    goal: UserGoal | None,
-    events: list[OnboardingEvent],
+    repo: UserRepository,
     client: anthropic.AsyncAnthropic | None = None,
 ) -> dict | None:
     """
-    Chama Claude para sintetizar o perfil. Retorna None (nunca propaga exceção)
-    se a chamada falhar ou a resposta não for um JSON válido.
+    Chama Claude para sintetizar o perfil, usando o dossiê completo do usuário
+    (ver app/services/ai_context.py: dívida, reserva, carteira, dividendos,
+    meta e eventos de onboarding — não só os campos soltos de User). Retorna
+    None (nunca propaga exceção) se a chamada falhar ou a resposta não for
+    um JSON válido.
     """
     try:
         active_client = client or _lazy_client.get()
-        user_prompt = _build_user_prompt(user, goal, events)
+        user_prompt = await build_user_information(repo, user)
 
         response = await active_client.messages.create(
             model=_MODEL,
@@ -103,7 +90,6 @@ async def generate_and_store_profile(user_id) -> None:
     qualquer etapa falhar, apenas loga — user_profile_summary permanece NULL.
     """
     from app.core.database import AsyncSessionFactory
-    from app.repositories.user_repository import UserRepository
 
     try:
         async with AsyncSessionFactory() as session:
@@ -113,10 +99,7 @@ async def generate_and_store_profile(user_id) -> None:
                 logger.warning("profile_service: user_id=%s not found — skipping", user_id)
                 return
 
-            goal = await repo.get_active_goal(user_id)
-            events = await repo.get_onboarding_events(user_id)
-
-            summary = await generate_profile_summary(result, goal, events)
+            summary = await generate_profile_summary(result, repo)
             await repo.update_profile_summary(user_id, summary)
     except Exception:
         logger.exception(
