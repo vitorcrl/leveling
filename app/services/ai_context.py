@@ -11,16 +11,66 @@ específico da geração de perfil.
 from datetime import date, timedelta
 from decimal import Decimal
 
+from app.domain.fii_catalog import get_fii_info
 from app.domain.models_user import User
 from app.repositories.user_repository import UserRepository
 
 _DIVIDEND_LOOKBACK_DAYS = 90
+
+# Rótulo humano para o stage interno — nunca mostrar só o número cru pra IA.
+_STAGE_LABELS = {
+    0: "quitando dívida",
+    1: "reserva de emergência",
+    2: "construindo caixinha rumo à 1ª cota de FII",
+    3: "investindo em FIIs",
+}
+
+# Pergunta em linguagem natural para cada step do onboarding (ver
+# app/bot/onboarding.py, _record_event) — os nomes internos (essential_expense,
+# has_portfolio etc.) são shorthand de código, não texto pronto para IA.
+_STEP_LABELS = {
+    "debt": "Tem dívida com juros altos?",
+    "debt_amount": "Valor total da dívida",
+    "essential_expense": "Gasto mensal essencial",
+    "budget": "Quanto consegue guardar/pagar por mês",
+    "savings": "Já tinha dinheiro guardado no início?",
+    "goal": "Meta escolhida",
+    "goal_value": "Custo mensal da meta",
+    "profile": "Perfil de risco escolhido",
+    "has_portfolio": "Já tinha FII na carteira?",
+    "portfolio": "Tickers informados",
+    "portfolio_shares": "Quantidade de cotas por ticker",
+    "knows_fii": "Já sabia o que é um FII?",
+}
+
+# Callback_data bruto do Telegram (ver onboarding.py) traduzido para texto —
+# sem isso, o dossiê vazaria strings internas tipo "onb_portfolio_sim".
+_RAW_VALUE_LABELS = {
+    "onb_portfolio_sim": "sim",
+    "onb_portfolio_nao": "não",
+    "onb_knows_fii_sim": "sim",
+    "onb_knows_fii_nao": "não",
+}
 
 
 def _fmt(value: Decimal | None) -> str:
     if value is None:
         return "não informado"
     return f"R$ {value:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _stage_label(stage: int) -> str:
+    return _STAGE_LABELS.get(stage, f"estágio {stage}")
+
+
+def _step_label(step: str) -> str:
+    return _STEP_LABELS.get(step, step)
+
+
+def _raw_value_label(raw_value: str | None) -> str:
+    if raw_value is None:
+        return "-"
+    return _RAW_VALUE_LABELS.get(raw_value, raw_value)
 
 
 async def build_user_information(repo: UserRepository, user: User) -> str:
@@ -52,7 +102,7 @@ async def build_user_information(repo: UserRepository, user: User) -> str:
 def _build_profile_section(user: User) -> str:
     lines = [
         "=== Perfil financeiro ===",
-        f"Estágio atual: {user.stage}",
+        f"Estágio atual: {_stage_label(user.stage)}",
         f"Aporte mensal: {_fmt(user.monthly_budget)}",
         f"Perfil de risco: {user.risk_profile or 'não informado'}",
         f"Gasto essencial informado: {_fmt(user.monthly_essential_expense)}",
@@ -92,7 +142,14 @@ def _build_portfolio_section(portfolio: list) -> str:
         return "=== Carteira de FIIs ===\nSem FIIs na carteira."
     lines = ["=== Carteira de FIIs ==="]
     for position in portfolio:
-        lines.append(f"- {position.ticker}: {position.shares} cotas")
+        info = get_fii_info(position.ticker)
+        if info is not None:
+            lines.append(
+                f"- {position.ticker} ({info.nome}, tipo {info.tipo_label}): "
+                f"{position.shares} cotas"
+            )
+        else:
+            lines.append(f"- {position.ticker} (tipo não catalogado): {position.shares} cotas")
     return "\n".join(lines)
 
 
@@ -113,5 +170,14 @@ def _build_events_section(events: list) -> str:
         return "=== Respostas do onboarding ===\nSem eventos registrados."
     lines = ["=== Respostas do onboarding ==="]
     for event in events:
-        lines.append(f"- {event.step}: {event.response_type} (valor: {event.raw_value or '-'})")
+        step = _step_label(event.step)
+        raw_value = _raw_value_label(event.raw_value)
+        if event.response_type == "answered":
+            lines.append(f"- {step}: {raw_value}")
+        elif event.response_type == "skipped":
+            lines.append(f"- {step}: usuário pulou essa pergunta")
+        elif event.response_type == "dont_know":
+            lines.append(f"- {step}: usuário respondeu 'não sei'")
+        else:
+            lines.append(f"- {step}: {event.response_type} (valor: {raw_value})")
     return "\n".join(lines)
