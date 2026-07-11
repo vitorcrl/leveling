@@ -6,9 +6,14 @@ stage interno: 0=dívida, 1=reserva de emergência (Estágio 0.5), 2=caixinha, 3
 /atualizar          — conversa guiada: pergunta se foi pagamento de dívida (stage 0)
                       ou dinheiro guardado para investir (stage 2), depois o valor.
                       Quitar a dívida promove automaticamente para stage 1 (reserva,
-                      se o usuário informou gasto essencial) ou stage 2 (caixinha).
-/reserva <valor>    — atualiza a reserva de emergência (stage 1). Ao bater a meta
-                      (5x gasto essencial), promove para stage 2 (caixinha).
+                      se o usuário informou gasto essencial) ou stage 2 (caixinha) —
+                      hoje sempre stage 2, já que a pergunta de gasto essencial não
+                      é mais feita no onboarding (Estágio 0.5 dormente, ver /reserva).
+/reserva <valor>    — comando "escondido" (não aparece em /ajuda): atualiza a reserva
+                      de emergência (stage 1). Ao bater a meta (5x gasto essencial),
+                      promove para stage 2 (caixinha). Sem chamador orgânico hoje —
+                      só útil para usuários que já estavam em stage 1 antes da
+                      simplificação do onboarding para 3 estágios.
 /pausar             — suspende o digest semanal proativo (controle explícito do usuário)
 /retomar            — reativa o digest semanal
 callback: stage_check_sim / stage_check_nao — resposta ao botão inline de promoção 2→3
@@ -285,7 +290,12 @@ def build_atualizar_handler() -> ConversationHandler:
 
 
 async def cmd_reserva(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handler de /reserva <valor> — atualiza a reserva de emergência (Estágio 0.5)."""
+    """
+    Handler "escondido" de /reserva <valor> — atualiza a reserva de emergência
+    (Estágio 0.5). Não aparece em /ajuda: ninguém novo entra em stage=1 desde
+    que a pergunta de gasto essencial saiu do onboarding ativo (ver
+    app/bot/onboarding.py). Mantido para quem já estava nesse stage antes.
+    """
     chat_id = update.effective_user.id
     args = context.args or []
 
@@ -488,13 +498,11 @@ async def cmd_ajuda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "um passo de cada vez. Sem jargão, sem pressão.\n\n"
         "*Estágios da jornada:*\n"
         "0️⃣ Quitando dívidas — foco em zerar o que deve\n"
-        "0️⃣.5️⃣ Reserva de emergência — juntando 5x o gasto essencial\n"
         "1️⃣ Construindo caixinha — acumulando para o primeiro FII\n"
         "2️⃣ Investindo em FIIs — renda passiva crescendo toda semana\n\n"
         "*Comandos disponíveis:*\n"
         "/start — inicia ou refaz o onboarding\n"
         "/atualizar — registra pagamento de dívida (estágio 0) ou dinheiro guardado (estágio 1)\n"
-        "/reserva <valor> — atualiza sua reserva de emergência (estágio 0.5)\n"
         "/diadigest <dia> — escolhe o dia da semana do seu digest (ex: quarta)\n"
         "/pausar — pausa os envios semanais\n"
         "/retomar — retoma os envios semanais\n"
@@ -521,7 +529,6 @@ async def cmd_unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         "Cada semana você vê o progresso até essas metas virarem renda passiva de verdade.\n\n"
         "Você pode estar em qualquer ponto:\n"
         "0️⃣ Quitando dívidas\n"
-        "0️⃣.5️⃣ Reserva de emergência\n"
         "1️⃣ Guardando na caixinha\n"
         "2️⃣ Investindo em FIIs",
         parse_mode="Markdown",
