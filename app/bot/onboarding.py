@@ -596,8 +596,8 @@ async def _finish_onboarding(
             "Quando tiver R$ 1.000 guardados, me avisa e a gente parte para os FIIs!"
         ),
         3: (
-            "📈 *Próximo passo:* toda semana você recebe análise da sua carteira.\n"
-            "Quando receber dividendos, me conta com /dividendo TICKER VALOR."
+            "📈 *Próximo passo:* toda semana você recebe análise da sua carteira "
+            "e o progresso dos seus dividendos rumo à meta."
         ),
     }
 
